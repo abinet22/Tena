@@ -1,0 +1,699 @@
+// Prisma Schema for Multi-Tenant Ethiopian Pharmacy Management SaaS (TenaPharm)
+// Enforces tenant_id on every tenant-scoped table for PostgreSQL Row-Level Security (RLS)
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// ENUMS
+// ----------------------------------------------------
+
+enum SubscriptionPlan {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+}
+
+enum LocationType {
+  STORE
+  DISPENSARY
+}
+
+enum RoleType {
+  ADMIN
+  INVENTORY_MANAGER
+  SALES_MANAGER
+  CASHIER_PHARMACIST
+  CUSTOM
+}
+
+enum ProductType {
+  MEDICINE
+  GENERAL
+}
+
+enum MovementType {
+  PURCHASE_RECEIPT
+  SALE
+  SALE_RETURN
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT_INCREASE
+  ADJUSTMENT_DECREASE
+  WRITE_OFF_EXPIRED
+  WRITE_OFF_DAMAGED
+  SUPPLIER_RETURN
+}
+
+enum PaymentMethod {
+  CASH
+  TELEBIRR
+  CBE_BIRR
+  BANK_TRANSFER
+  CREDIT
+}
+
+enum StorageCondition {
+  ROOM_TEMPERATURE // 15°C to 25°C
+  COOL // 8°C to 15°C
+  COLD_CHAIN // 2°C to 8°C (Vaccines, Insulin)
+  FREEZER // -20°C
+  PROTECT_FROM_LIGHT
+}
+
+// ----------------------------------------------------
+// SUPER ADMIN & TENANT MANAGEMENT
+// ----------------------------------------------------
+
+model Tenant {
+  id                    String             @id @default(uuid()) @db.Uuid
+  name                  String             @db.VarChar(255)
+  slug                  String             @unique @db.VarChar(100)
+  tinNumber             String?            @db.VarChar(50) // Ethiopian Tax Identification Number
+  licenseNumber         String?            @db.VarChar(100) // Ethiopian Food & Drug Authority (EFDA) License
+  region                String?            @db.VarChar(100) // e.g., Addis Ababa, Oromia, Sidama, Amhara
+  city                  String?            @db.VarChar(100)
+  subCity               String?            @db.VarChar(100)
+  woreda                String?            @db.VarChar(50)
+  phone                 String             @db.VarChar(30)
+  email                 String             @db.VarChar(100)
+  plan                  SubscriptionPlan   @default(STARTER)
+  status                SubscriptionStatus @default(TRIAL)
+  paymentReference      String?            @db.VarChar(100) // Telebirr / CBE payment reference
+  trialEndsAt           DateTime
+  subscriptionExpiresAt DateTime?
+  useEthiopianCalendar  Boolean            @default(true)
+  defaultLanguage       String             @default("am") // 'am' or 'en'
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  deletedAt             DateTime?
+
+  // Relations
+  users                 User[]
+  roles                 Role[]
+  locations             Location[]
+  products              Product[]
+  generics              Generic[]
+  manufacturers         Manufacturer[]
+  categories            Category[]
+  suppliers             Supplier[]
+  units                 Unit[]
+  batches               Batch[]
+  stockBalances         StockBalance[]
+  stockMovements        StockMovement[]
+  customers             Customer[]
+  purchaseOrders        PurchaseOrder[]
+  grns                  GRN[]
+  transfers             TransferOrder[]
+  salesInvoices         SalesInvoice[]
+  auditLogs             AuditLog[]
+
+  @@map("tenants")
+}
+
+// ----------------------------------------------------
+// USERS & RBAC PERMISSIONS
+// ----------------------------------------------------
+
+model Role {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  name        String    @db.VarChar(100)
+  code        RoleType  @default(CUSTOM)
+  description String?   @db.Text
+  permissions Json      // Array of string permission slugs: ["products:read", "pos:access", "cost:hide", etc.]
+  isSystem    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users       User[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  roleId       String    @db.Uuid
+  fullName     String    @db.VarChar(150)
+  email        String    @db.VarChar(120)
+  phone        String?   @db.VarChar(30)
+  passwordHash String    @db.VarChar(255)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role         Role      @relation(fields: [roleId], references: [id])
+  auditLogs    AuditLog[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+// ----------------------------------------------------
+// LOCATIONS (STORES & DISPENSARIES)
+// ----------------------------------------------------
+
+model Location {
+  id          String       @id @default(uuid()) @db.Uuid
+  tenantId    String       @db.Uuid
+  name        String       @db.VarChar(100)
+  code        String       @db.VarChar(30)
+  type        LocationType // STORE or DISPENSARY
+  isDefault   Boolean      @default(false)
+  phone       String?      @db.VarChar(30)
+  address     String?      @db.VarChar(255)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stockBalances StockBalance[]
+  movementsSource StockMovement[] @relation("sourceLocation")
+  movementsDest   StockMovement[] @relation("destinationLocation")
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("locations")
+}
+
+// ----------------------------------------------------
+// MASTER DATA
+// ----------------------------------------------------
+
+model Category {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  name        String    @db.VarChar(100)
+  description String?   @db.Text
+  isMedicine  Boolean   @default(true) // Category flag
+  trackBatch  Boolean   @default(true) // Driven flag: cosmetics & baby milk require batch
+  trackExpiry Boolean   @default(true) // Driven flag: diapers do not require expiry
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products    Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("categories")
+}
+
+model Generic {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenantId         String    @db.Uuid
+  name             String    @db.VarChar(150) // INN generic name e.g., Amoxicillin, Paracetamol
+  therapeuticClass String?   @db.VarChar(150) // e.g., Antibiotic, Analgesic, Antihypertensive
+  pregnancyCategory String?  @db.VarChar(10)  // A, B, C, D, X
+  description      String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  medicines        Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("generics")
+}
+
+model Manufacturer {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  name        String    @db.VarChar(150)
+  country     String    @db.VarChar(100) // e.g., Ethiopia, India, Jordan, Germany
+  address     String?   @db.VarChar(255)
+  contact     String?   @db.VarChar(100)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products    Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("manufacturers")
+}
+
+model Supplier {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @db.Uuid
+  name          String    @db.VarChar(150)
+  tinNumber     String?   @db.VarChar(50)
+  contactPerson String?   @db.VarChar(100)
+  phone         String    @db.VarChar(50)
+  email         String?   @db.VarChar(100)
+  address       String?   @db.VarChar(255)
+  balanceDue    Decimal   @default(0) @db.Decimal(12, 2)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  batches       Batch[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+model Unit {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  name         String    @db.VarChar(50) // Box, Strip, Tablet, Bottle, Vial, Ampoule, Piece
+  abbreviation String    @db.VarChar(20) // bx, str, tab, btl
+  isBase       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("units")
+}
+
+// ----------------------------------------------------
+// PRODUCT & DRUG REGISTER
+// ----------------------------------------------------
+
+model Product {
+  id                   String           @id @default(uuid()) @db.Uuid
+  tenantId             String           @db.Uuid
+  productType          ProductType      @default(MEDICINE)
+  categoryId           String           @db.Uuid
+  brandName            String           @db.VarChar(200)
+  barcode              String?          @db.VarChar(100)
+
+  // Medicine Specific Fields
+  genericId            String?          @db.Uuid
+  dosageForm           String?          @db.VarChar(100) // Tablet, Capsule, Syrup, Suspension, Injection
+  strength             String?          @db.VarChar(100) // e.g. 500mg, 250mg/5ml
+  packSize             String?          @db.VarChar(100) // e.g. 10x10, 100ml
+  manufacturerId       String?          @db.Uuid
+  countryOfOrigin      String?          @db.VarChar(100)
+  storageCondition     StorageCondition @default(ROOM_TEMPERATURE)
+  isControlled         Boolean          @default(false) // Narcotic/Psychotropic under EFDA
+  prescriptionRequired Boolean          @default(true)
+  isVatExempt          Boolean          @default(true) // Most essential drugs in Ethiopia are VAT-exempt
+
+  // Unit Conversions (e.g. 1 Box = 10 Strips = 100 Tablets)
+  baseUnit             String           @default("Tablet") @db.VarChar(50)
+  secondaryUnit        String?          @db.VarChar(50) // e.g. Strip
+  secondaryRatio       Int?             // e.g. 10 base units per secondary
+  tertiaryUnit         String?          @db.VarChar(50) // e.g. Box
+  tertiaryRatio        Int?             // e.g. 100 base units per tertiary
+
+  // General Products Specific Fields
+  variantSize          String?          @db.VarChar(100) // e.g., "Size 4 Maxi", "400g Powder"
+  standardSellingPrice Decimal?         @db.Decimal(12, 2)
+
+  // Reorder thresholds (in base units)
+  reorderLevel         Int              @default(50)
+  reorderQuantity      Int              @default(200)
+
+  isActive             Boolean          @default(true)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  deletedAt            DateTime?
+
+  // Relations
+  tenant               Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category             Category         @relation(fields: [categoryId], references: [id])
+  generic              Generic?         @relation(fields: [genericId], references: [id])
+  manufacturer         Manufacturer?    @relation(fields: [manufacturerId], references: [id])
+  batches              Batch[]
+  stockBalances        StockBalance[]
+  stockMovements       StockMovement[]
+
+  @@index([tenantId, barcode])
+  @@index([tenantId, brandName])
+  @@index([tenantId, productType])
+  @@map("products")
+}
+
+// ----------------------------------------------------
+// BATCHES & STOCK BALANCES ENGINE
+// ----------------------------------------------------
+
+model Batch {
+  id              String         @id @default(uuid()) @db.Uuid
+  tenantId        String         @db.Uuid
+  productId       String         @db.Uuid
+  supplierId      String?        @db.Uuid
+  batchNumber     String         @db.VarChar(100)
+  manufactureDate DateTime?
+  expiryDate      DateTime
+  costPrice       Decimal        @db.Decimal(12, 2)
+  sellingPrice    Decimal        @db.Decimal(12, 2)
+  grnReference    String?        @db.VarChar(100)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  deletedAt       DateTime?
+
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product         Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier        Supplier?      @relation(fields: [supplierId], references: [id])
+  stockBalances   StockBalance[]
+  stockMovements  StockMovement[]
+
+  @@unique([tenantId, productId, batchNumber])
+  @@index([tenantId, expiryDate])
+  @@map("batches")
+}
+
+// Balances are never modified directly - always updated alongside a StockMovement in a single transaction
+model StockBalance {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @db.Uuid
+  locationId String    @db.Uuid
+  productId  String    @db.Uuid
+  batchId    String    @db.Uuid
+  quantity   Int       @default(0) // In base units (e.g. tablets/pieces)
+  reserved   Int       @default(0) // Reserved for active draft sales/transfers
+  updatedAt  DateTime  @updatedAt
+
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location   Location  @relation(fields: [locationId], references: [id])
+  product    Product   @relation(fields: [productId], references: [id])
+  batch      Batch     @relation(fields: [batchId], references: [id])
+
+  @@unique([tenantId, locationId, batchId])
+  @@index([tenantId, locationId])
+  @@index([tenantId, productId])
+  @@map("stock_balances")
+}
+
+// Append-only audit ledger of every physical stock variation
+model StockMovement {
+  id                    String        @id @default(uuid()) @db.Uuid
+  tenantId              String        @db.Uuid
+  movementType          MovementType
+  referenceNumber       String        @db.VarChar(100) // GRN-xxx, TRF-xxx, INV-xxx, ADJ-xxx
+  sourceLocationId      String?       @db.Uuid
+  destinationLocationId String?       @db.Uuid
+  productId             String        @db.Uuid
+  batchId               String        @db.Uuid
+  quantity              Int           // Positive integer moved
+  unitCost              Decimal       @db.Decimal(12, 2)
+  unitPrice             Decimal       @db.Decimal(12, 2)
+  notes                 String?       @db.Text
+  performedByUserId     String?       @db.Uuid
+  createdAt             DateTime      @default(now())
+
+  tenant                Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceLocation        Location?     @relation("sourceLocation", fields: [sourceLocationId], references: [id])
+  destinationLocation   Location?     @relation("destinationLocation", fields: [destinationLocationId], references: [id])
+  product               Product       @relation(fields: [productId], references: [id])
+  batch                 Batch         @relation(fields: [batchId], references: [id])
+
+  @@index([tenantId, referenceNumber])
+  @@index([tenantId, movementType])
+  @@index([tenantId, createdAt])
+  @@map("stock_movements")
+}
+
+// ----------------------------------------------------
+// CUSTOMERS (CREDIT ACCOUNTS)
+// ----------------------------------------------------
+
+model Customer {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  fullName    String    @db.VarChar(150)
+  phone       String    @db.VarChar(50)
+  email       String?   @db.VarChar(100)
+  creditLimit Decimal   @default(0) @db.Decimal(12, 2)
+  currentDebt Decimal   @default(0) @db.Decimal(12, 2)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, phone])
+  @@index([tenantId])
+  @@map("customers")
+}
+
+// ----------------------------------------------------
+// PURCHASING & GRN
+// ----------------------------------------------------
+
+enum POStatus {
+  DRAFT
+  APPROVED
+  PARTIALLY_RECEIVED
+  COMPLETED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id                 String              @id @default(uuid()) @db.Uuid
+  tenantId           String              @db.Uuid
+  poNumber           String              @db.VarChar(50)
+  supplierId         String              @db.Uuid
+  status             POStatus            @default(DRAFT)
+  orderDate          DateTime            @default(now())
+  expectedDate       DateTime?
+  totalEstimatedCost Decimal             @default(0) @db.Decimal(12, 2)
+  notes              String?             @db.Text
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  supplier           Supplier            @relation(fields: [supplierId], references: [id])
+  items              PurchaseOrderItem[]
+  grns               GRN[]
+
+  @@unique([tenantId, poNumber])
+  @@index([tenantId])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id                String        @id @default(uuid()) @db.Uuid
+  purchaseOrderId   String        @db.Uuid
+  productId         String        @db.Uuid
+  quantityRequested Int
+  unitCostEstimated Decimal       @db.Decimal(12, 2)
+  quantityReceived  Int           @default(0)
+
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product           Product       @relation(fields: [productId], references: [id])
+
+  @@map("purchase_order_items")
+}
+
+model GRN {
+  id                    String        @id @default(uuid()) @db.Uuid
+  tenantId              String        @db.Uuid
+  grnNumber             String        @db.VarChar(50)
+  poId                  String?       @db.Uuid
+  supplierId            String        @db.Uuid
+  destinationLocationId String        @db.Uuid // Delivered into Store Warehouse
+  invoiceNumber         String        @db.VarChar(100)
+  receivedDate          DateTime      @default(now())
+  totalCost             Decimal       @db.Decimal(12, 2)
+  notes                 String?       @db.Text
+  createdAt             DateTime      @default(now())
+
+  tenant                Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  purchaseOrder         PurchaseOrder? @relation(fields: [poId], references: [id])
+  supplier              Supplier      @relation(fields: [supplierId], references: [id])
+  destinationLocation   Location      @relation(fields: [destinationLocationId], references: [id])
+  items                 GRNItem[]
+
+  @@unique([tenantId, grnNumber])
+  @@index([tenantId])
+  @@map("grns")
+}
+
+model GRNItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  grnId            String   @db.Uuid
+  productId        String   @db.Uuid
+  batchNumber      String   @db.VarChar(100)
+  manufactureDate  DateTime?
+  expiryDate       DateTime
+  quantityReceived Int
+  unitCost         Decimal  @db.Decimal(12, 2)
+  unitSellingPrice Decimal  @db.Decimal(12, 2)
+
+  grn              GRN      @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  product          Product  @relation(fields: [productId], references: [id])
+
+  @@map("grn_items")
+}
+
+// ----------------------------------------------------
+// STORE TO DISPENSARY TRANSFERS
+// ----------------------------------------------------
+
+enum TransferStatus {
+  DRAFT
+  PENDING_APPROVAL
+  DISPATCHED
+  RECEIVED
+  CANCELLED
+}
+
+model TransferOrder {
+  id                    String              @id @default(uuid()) @db.Uuid
+  tenantId              String              @db.Uuid
+  transferNumber        String              @db.VarChar(50)
+  sourceLocationId      String              @db.Uuid // Store Warehouse
+  destinationLocationId String              @db.Uuid // Front Dispensary Counter
+  status                TransferStatus      @default(RECEIVED)
+  requestedBy           String              @db.VarChar(100)
+  approvedBy            String?             @db.VarChar(100)
+  createdAt             DateTime            @default(now())
+  receivedAt            DateTime?
+  notes                 String?             @db.Text
+
+  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sourceLocation        Location            @relation("transferSource", fields: [sourceLocationId], references: [id])
+  destinationLocation   Location            @relation("transferDest", fields: [destinationLocationId], references: [id])
+  items                 TransferOrderItem[]
+
+  @@unique([tenantId, transferNumber])
+  @@index([tenantId])
+  @@map("transfer_orders")
+}
+
+model TransferOrderItem {
+  id              String        @id @default(uuid()) @db.Uuid
+  transferOrderId String        @db.Uuid
+  productId       String        @db.Uuid
+  batchId         String        @db.Uuid
+  quantity        Int           // In base units
+
+  transferOrder   TransferOrder @relation(fields: [transferOrderId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id])
+  batch           Batch         @relation(fields: [batchId], references: [id])
+
+  @@map("transfer_order_items")
+}
+
+// ----------------------------------------------------
+// POINT OF SALE & SALES INVOICES
+// ----------------------------------------------------
+
+enum SalesStatus {
+  COMPLETED
+  RETURNED
+  PARTIALLY_RETURNED
+}
+
+model SalesInvoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  tenantId       String        @db.Uuid
+  invoiceNumber  String        @db.VarChar(50)
+  locationId     String        @db.Uuid // Deducts only from Dispensary
+  cashierName    String        @db.VarChar(100)
+  customerId     String?       @db.Uuid
+  customerName   String?       @db.VarChar(150)
+  customerPhone  String?       @db.VarChar(50)
+  subtotal       Decimal       @db.Decimal(12, 2)
+  discount       Decimal       @default(0) @db.Decimal(12, 2)
+  tax            Decimal       @default(0) @db.Decimal(12, 2)
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  prescriptionRef String?      @db.VarChar(100)
+  status         SalesStatus   @default(COMPLETED)
+  createdAt      DateTime      @default(now())
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  location       Location      @relation(fields: [locationId], references: [id])
+  customer       Customer?     @relation(fields: [customerId], references: [id])
+  items          SalesItem[]
+  payments       SalesPayment[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, createdAt])
+  @@map("sales_invoices")
+}
+
+model SalesItem {
+  id             String       @id @default(uuid()) @db.Uuid
+  salesInvoiceId String       @db.Uuid
+  productId      String       @db.Uuid
+  batchId        String       @db.Uuid
+  batchNumber    String       @db.VarChar(100)
+  expiryDate     DateTime
+  unitType       String       @db.VarChar(20) // Base, Secondary, Tertiary
+  quantityInUnit Int
+  quantityInBase Int
+  unitPrice      Decimal      @db.Decimal(12, 2)
+  totalPrice     Decimal      @db.Decimal(12, 2)
+
+  salesInvoice   SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+  product        Product      @relation(fields: [productId], references: [id])
+  batch          Batch        @relation(fields: [batchId], references: [id])
+
+  @@map("sales_items")
+}
+
+model SalesPayment {
+  id             String        @id @default(uuid()) @db.Uuid
+  salesInvoiceId String        @db.Uuid
+  method         PaymentMethod
+  amount         Decimal       @db.Decimal(12, 2)
+  reference      String?       @db.VarChar(100) // Telebirr / CBE transaction ref
+
+  salesInvoice   SalesInvoice  @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+
+  @@map("sales_payments")
+}
+
+// ----------------------------------------------------
+// AUDIT LOG
+// ----------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  userId     String?  @db.Uuid
+  action     String   @db.VarChar(100) // "PRICE_CHANGE", "USER_CREATE", "STOCK_WRITE_OFF", etc.
+  entity     String   @db.VarChar(100)
+  entityId   String   @db.VarChar(100)
+  oldValues  Json?
+  newValues  Json?
+  ipAddress  String?  @db.VarChar(50)
+  userAgent  String?  @db.VarChar(255)
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, action])
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}

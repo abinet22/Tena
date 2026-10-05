@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # -------------------------------------------------------------------------
+  # PostgreSQL with Row-Level Security (RLS) support
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: tenapharm_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tenapharm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-TenaPharmSecret2025!}
+      POSTGRES_DB: ${POSTGRES_DB:-tenapharm_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./prisma/migrations/0_init_rls/migration.sql:/docker-entrypoint-initdb.d/01_init_rls.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tenapharm_user} -d ${POSTGRES_DB:-tenapharm_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tenapharm_network
+
+  # -------------------------------------------------------------------------
+  # Redis for BullMQ Background Jobs (Nightly Expiry & Low-Stock Alerts)
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: tenapharm_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-RedisSecurePass2025!}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-RedisSecurePass2025!}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tenapharm_network
+
+  # -------------------------------------------------------------------------
+  # NestJS Backend API Service
+  # -------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tenapharm_backend
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-tenapharm_user}:${POSTGRES_PASSWORD:-TenaPharmSecret2025!}@postgres:5432/${POSTGRES_DB:-tenapharm_db}?schema=public"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisSecurePass2025!}
+      JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-key-tenapharm-ethiopia}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-super-secret-refresh-key-tenapharm-ethiopia}
+      JWT_EXPIRES_IN: "15m"
+      JWT_REFRESH_EXPIRES_IN: "7d"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+    ports:
+      - "4000:4000"
+    networks:
+      - tenapharm_network
+
+  # -------------------------------------------------------------------------
+  # Next.js Frontend Application
+  # -------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tenapharm_frontend
+    restart: always
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: "http://backend:4000/api/v1"
+    ports:
+      - "3000:3000"
+    networks:
+      - tenapharm_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  tenapharm_network:
+    driver: bridge

@@ -1,0 +1,6 @@
+{
+  "name": "TenaPharm - Ethiopian Pharmacy Management SaaS",
+  "description": "Multi-tenant Pharmacy Management SaaS for Ethiopian pharmacies with FEFO stock engine, EFDA compliance, dual-calendar (EC/GC), Amharic/English i18n, and multi-location tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
