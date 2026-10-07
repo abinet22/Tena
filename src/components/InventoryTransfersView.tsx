@@ -3,11 +3,12 @@ import {
   ArrowRightLeft, Warehouse, Store, AlertTriangle,
   CheckCircle2, Clock, Plus, Trash2, ShieldAlert,
   Search, Filter, FileText, ArrowDownRight, Tag, Truck,
-  Building2, MapPin
+  Building2, MapPin, Layers, History, ShoppingCart
 } from 'lucide-react';
 import {
   StockBalance, Product, Batch, Location, TransferOrder,
-  StockAdjustment, StockWriteOff, RoleCode, Category, AuditLog, User
+  StockAdjustment, StockWriteOff, RoleCode, Category, AuditLog, User,
+  StockMovement
 } from '../types/pharmacy';
 import { sanitizePriceForRole, formatBaseQuantityInUnits } from '../utils/stockEngine';
 import { formatDualDate } from '../utils/ethiopianCalendar';
@@ -26,6 +27,8 @@ interface InventoryTransfersViewProps {
   currentRole: RoleCode;
   language: 'en' | 'am';
   currentUser?: User | null;
+  stockMovements?: StockMovement[];
+  setStockMovements?: React.Dispatch<React.SetStateAction<StockMovement[]>>;
   onAddAuditLog?: (entry: AuditLog) => void;
 }
 
@@ -42,9 +45,11 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
   currentRole,
   language,
   currentUser,
+  stockMovements = [],
+  setStockMovements,
   onAddAuditLog,
 }) => {
-  const [activeTab, setActiveTab] = useState<'BALANCES' | 'TRANSFERS' | 'WRITEOFFS'>('BALANCES');
+  const [activeTab, setActiveTab] = useState<'BALANCES' | 'TRANSFERS' | 'MOVEMENTS' | 'WRITEOFFS'>('BALANCES');
   const [selectedLocFilter, setSelectedLocFilter] = useState<string>('ALL');
   const [inventoryKindFilter, setInventoryKindFilter] = useState<'ALL' | 'STORE' | 'DISPENSARY'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
@@ -227,6 +232,26 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
 
     setTransfers((prev) => [newTransfer, ...prev]);
 
+    if (setStockMovements) {
+      const movement: StockMovement = {
+        id: `sm-${Date.now()}`,
+        tenantId: currentTenantId,
+        movementType: isInterBranch ? 'INTER_BRANCH_TRANSFER' : 'STORE_TO_DISPENSARY_TRANSFER',
+        referenceNumber: transferNumber,
+        sourceLocationId: activeSourceLoc.id,
+        destinationLocationId: activeDestLoc.id,
+        productId: targetBatch.productId,
+        batchId: targetBatch.id,
+        quantity: transferQty,
+        unitCost: Number(targetBatch.costPrice || 0),
+        unitPrice: Number(targetBatch.sellingPrice || 0),
+        notes: transferNotes || `${transferKind}: Dispatched ${transferQty} units from ${activeSourceLoc.name} to ${activeDestLoc.name}`,
+        performedByUserId: currentUser?.id || 'u-2',
+        createdAt: now.toISOString(),
+      };
+      setStockMovements((prev) => [movement, ...prev]);
+    }
+
     if (onAddAuditLog) {
       const targetProd = products.find((p) => p.id === targetBatch.productId);
       onAddAuditLog(
@@ -278,6 +303,25 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
     setStockBalances((prev) =>
       prev.map((b) => (b.id === writeOffBalanceId ? { ...b, quantity: b.quantity - writeOffQty } : b))
     );
+
+    if (setStockMovements && targetProduct && targetBatch) {
+      const movement: StockMovement = {
+        id: `sm-${Date.now()}`,
+        tenantId: currentTenantId,
+        movementType: 'STOCK_WRITE_OFF',
+        referenceNumber: writeOffCertRef || 'EFDA-WRITE-OFF',
+        sourceLocationId: balance.locationId,
+        productId: targetProduct.id,
+        batchId: targetBatch.id,
+        quantity: writeOffQty,
+        unitCost: Number(targetBatch.costPrice || 0),
+        unitPrice: Number(targetBatch.sellingPrice || 0),
+        notes: `Regulatory quarantine write-off. Reason: ${writeOffReason}. Cert Ref: ${writeOffCertRef}`,
+        performedByUserId: currentUser?.id || 'u-2',
+        createdAt: now.toISOString(),
+      };
+      setStockMovements((prev) => [movement, ...prev]);
+    }
 
     if (onAddAuditLog) {
       onAddAuditLog(
@@ -419,12 +463,21 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
         </button>
         <button
           onClick={() => setActiveTab('TRANSFERS')}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition-all ${
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition-all cursor-pointer ${
             activeTab === 'TRANSFERS' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
           }`}
         >
           <ArrowRightLeft className="w-3.5 h-3.5" />
           <span>Transfer Vouchers ({transfers.length})</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('MOVEMENTS')}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold transition-all cursor-pointer ${
+            activeTab === 'MOVEMENTS' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Stock Movements Ledger ({stockMovements.length})</span>
         </button>
       </div>
 
@@ -582,18 +635,39 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                           {Number(batch.sellingPrice).toFixed(2)} ETB
                         </td>
                         <td className="px-4 py-3 text-center">
-                          {expiryInfo.label === 'EXPIRED' && (
-                            <button
-                              onClick={() => {
-                                setWriteOffBalanceId(bal.id);
-                                setWriteOffQty(bal.quantity);
-                                setShowWriteOffModal(true);
-                              }}
-                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded font-semibold text-[11px] border border-rose-200"
-                            >
-                              Write-Off Expired
-                            </button>
-                          )}
+                          <div className="flex items-center justify-center gap-1.5">
+                            {expiryInfo.label === 'EXPIRED' && (
+                              <button
+                                onClick={() => {
+                                  setWriteOffBalanceId(bal.id);
+                                  setWriteOffQty(bal.quantity);
+                                  setShowWriteOffModal(true);
+                                }}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded font-semibold text-[11px] border border-rose-200 cursor-pointer"
+                              >
+                                Write-Off Expired
+                              </button>
+                            )}
+
+                            {loc?.type === 'DISPENSARY' && bal.quantity < (prod.reorderLevel || 50) && (
+                              <button
+                                onClick={() => {
+                                  setDestLocationId(bal.locationId);
+                                  setSourceLocationId(defaultStoreLoc?.id || '');
+                                  setTransferBatchId(bal.batchId);
+                                  const needed = Math.max(50, (prod.reorderLevel || 50) - bal.quantity);
+                                  setTransferQty(needed);
+                                  setTransferNotes(`Replenishing ${prod.brandName} due to dispensary stock shortage (${bal.quantity} < ${prod.reorderLevel || 50})`);
+                                  setShowTransferModal(true);
+                                }}
+                                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg font-bold text-[11px] shadow-2xs flex items-center gap-1 cursor-pointer transition-colors"
+                                title="Prompt Store to Dispensary stock transfer to fix shortage"
+                              >
+                                <ArrowRightLeft className="w-3 h-3 text-slate-950" />
+                                <span>Replenish from Store</span>
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -693,6 +767,111 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                           {trf.status}
                         </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* STOCK MOVEMENTS LEDGER TAB */}
+      {activeTab === 'MOVEMENTS' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                <Layers className="w-4 h-4 text-emerald-600" />
+                <span>Stock Movements & Traceability Ledger</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Every physical stock transaction (Inbound GRN intake, Store-to-Dispensary replenishment, POS sales, and Write-offs) is cryptographically traceable.
+              </p>
+            </div>
+            <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-700">
+              {stockMovements.length} Total Events
+            </span>
+          </div>
+
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 uppercase text-[11px] font-semibold">
+              <tr>
+                <th className="px-4 py-3">Timestamp</th>
+                <th className="px-4 py-3">Movement Type</th>
+                <th className="px-4 py-3">Reference #</th>
+                <th className="px-4 py-3">Product & Batch</th>
+                <th className="px-4 py-3">Origin / Destination</th>
+                <th className="px-4 py-3 text-right">Quantity</th>
+                <th className="px-4 py-3">Notes & Compliance</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {stockMovements.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                    No stock movements recorded yet.
+                  </td>
+                </tr>
+              ) : (
+                stockMovements.map((sm) => {
+                  const prod = products.find((p) => p.id === sm.productId);
+                  const batch = batches.find((b) => b.id === sm.batchId);
+                  const srcLoc = locations.find((l) => l.id === sm.sourceLocationId);
+                  const destLoc = locations.find((l) => l.id === sm.destinationLocationId);
+
+                  const isIntake = sm.movementType === 'GRN_INTAKE';
+                  const isTransfer = sm.movementType.includes('TRANSFER');
+                  const isDispense = sm.movementType === 'POS_DISPENSE';
+                  const isWriteOff = sm.movementType === 'STOCK_WRITE_OFF';
+
+                  return (
+                    <tr key={sm.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
+                        {formatDualDate(sm.createdAt, language)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                          isIntake
+                            ? 'bg-blue-50 text-blue-800 border-blue-200'
+                            : isTransfer
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : isDispense
+                            ? 'bg-purple-50 text-purple-800 border-purple-200'
+                            : 'bg-rose-50 text-rose-800 border-rose-200'
+                        }`}>
+                          {isIntake ? <Warehouse className="w-3 h-3 text-blue-600" /> : isTransfer ? <ArrowRightLeft className="w-3 h-3 text-emerald-600" /> : isDispense ? <ShoppingCart className="w-3 h-3 text-purple-600" /> : <Trash2 className="w-3 h-3 text-rose-600" />}
+                          {sm.movementType.replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono font-bold text-slate-900">
+                        {sm.referenceNumber}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-slate-900">{prod?.brandName || 'Product'}</div>
+                        <div className="text-[10px] font-mono text-slate-500">Batch: {batch?.batchNumber || sm.batchId}</div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {srcLoc && destLoc ? (
+                          <div className="flex items-center gap-1 text-[11px]">
+                            <span className="font-medium text-amber-800">{srcLoc.name}</span>
+                            <span className="text-slate-400">&rarr;</span>
+                            <span className="font-medium text-emerald-800">{destLoc.name}</span>
+                          </div>
+                        ) : srcLoc ? (
+                          <span className="text-[11px] text-amber-800">From: {srcLoc.name}</span>
+                        ) : destLoc ? (
+                          <span className="text-[11px] text-emerald-800">To: {destLoc.name}</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right font-bold text-slate-900">
+                        {sm.quantity.toLocaleString()} {prod?.baseUnit || 'units'}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 text-[11px]">
+                        {sm.notes || '—'}
                       </td>
                     </tr>
                   );

@@ -190,6 +190,65 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const totalExpiringCount = expiringBatches.length;
   const totalRiskValuation = expiringBatches.reduce((acc, b) => acc + b.totalValueAtRisk, 0);
 
+  // ------------------------------------------------------------------
+  // Dedicated FEFO 30-Day Batches Monitor calculation
+  // ------------------------------------------------------------------
+  const fefo30DayBatches = batches
+    .map((batch) => {
+      const prod = products.find((p) => p.id === batch.productId);
+      const cat = prod ? categories.find((c) => c.id === prod.categoryId) : undefined;
+      if (cat && !cat.trackExpiry) return null;
+
+      const expDate = new Date(batch.expiryDate);
+      const diffTime = expDate.getTime() - currentDate.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      // Expiring strictly within next 30 days window: 0 < diffDays <= 30
+      if (diffDays <= 0 || diffDays > 30) return null;
+
+      const balances = stockBalances.filter((b) => b.batchId === batch.id);
+      const totalBatchStock = balances.reduce((sum, b) => sum + b.quantity, 0);
+      if (totalBatchStock <= 0) return null;
+
+      const currentLocStock = balances
+        .filter((b) => b.locationId === currentLocation.id)
+        .reduce((sum, b) => sum + b.quantity, 0);
+
+      const storeStock = balances
+        .filter((b) => {
+          const loc = locations.find((l) => l.id === b.locationId);
+          return loc?.type === 'STORE';
+        })
+        .reduce((sum, b) => sum + b.quantity, 0);
+
+      const dispStock = balances
+        .filter((b) => {
+          const loc = locations.find((l) => l.id === b.locationId);
+          return loc?.type === 'DISPENSARY';
+        })
+        .reduce((sum, b) => sum + b.quantity, 0);
+
+      const unitVal = Number(batch.sellingPrice || batch.costPrice || 0);
+      const totalVal = totalBatchStock * unitVal;
+
+      return {
+        batch,
+        product: prod,
+        category: cat,
+        diffDays,
+        totalBatchStock,
+        currentLocStock,
+        storeStock,
+        dispStock,
+        totalVal,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((a, b) => a.diffDays - b.diffDays);
+
+  const fefo30TotalUnits = fefo30DayBatches.reduce((acc, b) => acc + b.totalBatchStock, 0);
+  const fefo30TotalValuation = fefo30DayBatches.reduce((acc, b) => acc + b.totalVal, 0);
+
   // Filtered batches for the Expiry Monitor
   const displayedExpiringBatches = expiringBatches.filter((item) => {
     if (expiryFilter === 'CRITICAL_30') return item.tier === 'CRITICAL';
@@ -725,6 +784,192 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </span>
           </div>
         </div>
+      </div>
+
+      {/* ==================================================================== */}
+      {/* NEW DASHBOARD WIDGET: BATCHES EXPIRING WITHIN NEXT 30 DAYS (FEFO)     */}
+      {/* ==================================================================== */}
+      <div className="bg-white rounded-3xl border border-amber-300 shadow-sm overflow-hidden ring-1 ring-amber-400/20">
+        {/* Header Ribbon */}
+        <div className="p-5 md:p-6 border-b border-amber-200 bg-gradient-to-r from-amber-950 via-slate-900 to-amber-900 text-white flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/40 flex items-center justify-center animate-pulse">
+                <Hourglass className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold text-white">
+                    FEFO Priority Alert: Batches Expiring Within Next 30 Days
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-rose-500/30 text-rose-300 border border-rose-500/40">
+                    &le; 30 Days Window
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300">
+                  Proactive FEFO management: Prioritize dispensing these batches first at POS checkout or rotate from bulk store to retail dispensary counters before expiry.
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Metrics Line */}
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-200">
+              <span className="inline-flex items-center gap-1.5 bg-slate-800/90 px-3 py-1 rounded-xl border border-amber-500/30">
+                <AlertOctagon className="w-3.5 h-3.5 text-rose-400" />
+                <span>Critical Batches: <strong className="text-rose-400 font-bold">{fefo30DayBatches.length}</strong></span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 bg-slate-800/90 px-3 py-1 rounded-xl border border-amber-500/30">
+                <Pill className="w-3.5 h-3.5 text-amber-400" />
+                <span>Units at Risk: <strong className="text-amber-300 font-bold">{fefo30TotalUnits.toLocaleString()}</strong></span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 bg-slate-800/90 px-3 py-1 rounded-xl border border-amber-500/30">
+                <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Capital at Risk: <strong className="text-emerald-300 font-bold">{fefo30TotalValuation.toLocaleString()} ETB</strong></span>
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Action Navigation */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onNavigateTab('POS')}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-sm cursor-pointer"
+            >
+              <ShoppingCart className="w-4 h-4" />
+              <span>Dispense at POS</span>
+            </button>
+            <button
+              onClick={() => onNavigateTab('INVENTORY_TRANSFERS')}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-medium rounded-xl text-xs border border-slate-700 transition-colors cursor-pointer"
+            >
+              <ArrowRightLeft className="w-4 h-4 text-amber-400" />
+              <span>Store ➔ Dispensary Transfer</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Content Area */}
+        {fefo30DayBatches.length === 0 ? (
+          <div className="p-8 text-center bg-emerald-50/40 space-y-2">
+            <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
+            <div className="text-sm font-bold text-slate-800">
+              No batches expiring within the next 30 days!
+            </div>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              All stored and dispensing batches have safe shelf-life validity beyond 30 days. Regular FEFO rotation is enforced.
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {fefo30DayBatches.map((item, idx) => {
+              const { batch, product, category, diffDays, totalBatchStock, currentLocStock, storeStock, dispStock, totalVal } = item;
+              const gen = generics.find((g) => g.id === product?.genericId);
+
+              // 30-day countdown ratio
+              const remainingRatio = Math.max(0, Math.min(100, Math.round((diffDays / 30) * 100)));
+
+              return (
+                <div
+                  key={batch.id}
+                  className="p-4 md:p-5 hover:bg-amber-50/40 transition-colors flex flex-wrap items-center justify-between gap-4 border-l-4 border-rose-500"
+                >
+                  {/* Left: Product, Generic & Batch Details */}
+                  <div className="flex-1 min-w-[280px]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-slate-900 text-amber-300">
+                        FEFO #{idx + 1}
+                      </span>
+                      <span className="font-bold text-slate-900 text-sm">
+                        {product?.brandName || 'Product'}
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                        <Hourglass className="w-3 h-3 text-rose-600" />
+                        {diffDays} DAYS REMAINING
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                      {gen && <span className="font-semibold text-slate-700">INN: {gen.name}</span>}
+                      <span className="font-mono text-slate-800 font-bold bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200">
+                        Batch: {batch.batchNumber}
+                      </span>
+                      <span>Category: {category?.name || 'Pharmaceutical'}</span>
+                      {product?.storageCondition && (
+                        <span className="text-slate-500 text-[11px]">
+                          Storage: {product.storageCondition.replace('_', ' ')}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-2 text-[11px] text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="font-medium text-slate-700">
+                        Expiry Date: <strong>{formatDualDate(batch.expiryDate, language)}</strong>
+                      </span>
+                      {batch.grnReference && (
+                        <span className="text-slate-400 font-mono text-[10px]">
+                          Intake Ref: {batch.grnReference}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Middle: Dual-Inventory Breakdown (Store bulk vs Dispensary ready) */}
+                  <div className="w-full md:w-72 space-y-2">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-semibold text-slate-700">
+                        {totalBatchStock.toLocaleString()} {product?.baseUnit || 'units'} Total
+                      </span>
+                      <span className="font-bold text-rose-700">
+                        {totalVal.toLocaleString()} ETB at risk
+                      </span>
+                    </div>
+
+                    {/* Expiry countdown bar */}
+                    <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden relative">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-rose-600 to-amber-500 transition-all duration-500"
+                        style={{ width: `${remainingRatio}%` }}
+                      ></div>
+                    </div>
+
+                    {/* Store vs Dispensary stock breakdown */}
+                    <div className="flex items-center justify-between text-[11px] bg-slate-50 p-2 rounded-xl border border-slate-200">
+                      <div className="flex items-center gap-1 text-amber-800">
+                        <Warehouse className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Store (Bulk): <strong>{storeStock}</strong></span>
+                      </div>
+                      <div className="flex items-center gap-1 text-emerald-800">
+                        <Store className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Dispensary (Ready): <strong>{dispStock}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: Actions */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onNavigateTab('POS')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                    >
+                      <ShoppingCart className="w-3.5 h-3.5" />
+                      <span>Dispense (FEFO)</span>
+                    </button>
+                    {storeStock > 0 && (
+                      <button
+                        onClick={() => onNavigateTab('INVENTORY_TRANSFERS')}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-xl text-xs font-bold border border-amber-300 transition-colors cursor-pointer"
+                        title="Move from bulk store to retail dispensary before expiry"
+                      >
+                        <ArrowRightLeft className="w-3.5 h-3.5 text-amber-700" />
+                        <span>Move to Dispense</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ==================================================================== */}

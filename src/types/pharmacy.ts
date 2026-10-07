@@ -253,6 +253,34 @@ export interface GRN {
   items: GRNItem[];
 }
 
+export type SupplierInvoiceStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID';
+
+export interface SupplierPayment {
+  id: string;
+  paymentDate: string;
+  amount: number;
+  paymentMethod: 'TELEBIRR' | 'CBE_BIRR' | 'BANK_TRANSFER' | 'CASH' | 'CHEQUE';
+  referenceNumber: string; // Bank Ref / CBE Birr / Telebirr Transaction ID
+  notes?: string;
+}
+
+export interface SupplierInvoice {
+  id: string;
+  tenantId: string;
+  invoiceNumber: string;
+  supplierId: string;
+  grnId?: string;
+  poId?: string;
+  invoiceDate: string;
+  dueDate: string;
+  totalAmount: number;
+  paidAmount: number;
+  status: SupplierInvoiceStatus;
+  paymentTerms?: string;
+  payments: SupplierPayment[];
+  notes?: string;
+}
+
 export type TransferStatus = 'DRAFT' | 'PENDING_APPROVAL' | 'DISPATCHED' | 'RECEIVED' | 'CANCELLED';
 
 export interface TransferOrderItem {
@@ -356,7 +384,7 @@ export interface StockWriteOff {
   createdAt: string;
 }
 
-export type AuditCategory = 'STOCK_ENGINE' | 'POS_DISPENSING' | 'CONTROLLED_DRUGS' | 'USER_SECURITY' | 'PRICE_MASTER' | 'COMPLIANCE' | 'TENANT_ADMIN';
+export type AuditCategory = 'STOCK_ENGINE' | 'POS_DISPENSING' | 'CONTROLLED_DRUGS' | 'USER_SECURITY' | 'PRICE_MASTER' | 'COMPLIANCE' | 'TENANT_ADMIN' | 'FINANCIAL';
 export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL' | 'ALERT';
 
 export interface AuditLog {

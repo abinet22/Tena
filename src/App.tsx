@@ -7,14 +7,16 @@ import {
   Tenant, Role, User, Location, Category, Generic,
   Manufacturer, Supplier, Unit, Product, Batch,
   StockBalance, RoleCode, SubscriptionStatus, SubscriptionPlan,
-  PurchaseOrder, GRN, TransferOrder, SalesInvoice, Customer, AuditLog
+  PurchaseOrder, GRN, TransferOrder, SalesInvoice, Customer, AuditLog,
+  SupplierInvoice, StockMovement
 } from './types/pharmacy';
 import {
   initialTenants, initialRoles, initialUsers, initialLocations,
   initialCategories, initialGenerics, initialManufacturers,
   initialSuppliers, initialUnits, initialProducts, initialBatches,
   initialStockBalances, initialPurchaseOrders, initialGRNs,
-  initialTransfers, initialSalesInvoices, initialCustomers, initialAuditLogs
+  initialTransfers, initialSalesInvoices, initialCustomers, initialAuditLogs,
+  initialSupplierInvoices, initialStockMovements
 } from './data/initialData';
 import { Header } from './components/Header';
 import { OverviewView } from './components/OverviewView';
@@ -161,6 +163,16 @@ export default function App() {
     return saved ? JSON.parse(saved) : initialAuditLogs;
   });
 
+  const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>(() => {
+    const saved = localStorage.getItem('tenapharm_supplier_invoices');
+    return saved ? JSON.parse(saved) : initialSupplierInvoices;
+  });
+
+  const [stockMovements, setStockMovements] = useState<StockMovement[]>(() => {
+    const saved = localStorage.getItem('tenapharm_stock_movements');
+    return saved ? JSON.parse(saved) : initialStockMovements;
+  });
+
   // UI Navigation & Modals
   const [activeTab, setActiveTab] = useState<NavTabId>('OVERVIEW');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -195,10 +207,13 @@ export default function App() {
     localStorage.setItem('tenapharm_sales', JSON.stringify(salesInvoices));
     localStorage.setItem('tenapharm_customers', JSON.stringify(customers));
     localStorage.setItem('tenapharm_audit_logs', JSON.stringify(auditLogs));
+    localStorage.setItem('tenapharm_supplier_invoices', JSON.stringify(supplierInvoices));
+    localStorage.setItem('tenapharm_stock_movements', JSON.stringify(stockMovements));
   }, [
     tenants, users, currentUser, roles, locations, categories, generics, manufacturers,
     suppliers, units, products, batches, stockBalances,
-    purchaseOrders, grns, transfers, salesInvoices, customers, auditLogs
+    purchaseOrders, grns, transfers, salesInvoices, customers, auditLogs,
+    supplierInvoices, stockMovements
   ]);
 
   const handleAddAuditLog = (entry: AuditLog) => {
@@ -882,6 +897,8 @@ export default function App() {
             licenseNumber={currentTenant.licenseNumber}
             currentRole={currentRole}
             language={language}
+            stockMovements={stockMovements}
+            setStockMovements={setStockMovements}
             onAddAuditLog={handleAddAuditLog}
           />
         )}
@@ -900,6 +917,8 @@ export default function App() {
             currentRole={currentRole}
             language={language}
             currentUser={currentUser}
+            stockMovements={stockMovements}
+            setStockMovements={setStockMovements}
             onAddAuditLog={handleAddAuditLog}
           />
         )}
@@ -922,6 +941,10 @@ export default function App() {
             currentTenantId={currentTenant.id}
             currentRole={currentRole}
             language={language}
+            supplierInvoices={supplierInvoices}
+            setSupplierInvoices={setSupplierInvoices}
+            stockMovements={stockMovements}
+            setStockMovements={setStockMovements}
             onAddAuditLog={handleAddAuditLog}
           />
         )}

@@ -1,6 +1,7 @@
 import {
   Tenant, Role, User, Location, Category, Generic, Manufacturer,
-  Supplier, Unit, Product, Batch, StockBalance, StockMovement, AuditLog
+  Supplier, Unit, Product, Batch, StockBalance, StockMovement, AuditLog,
+  SupplierInvoice
 } from '../types/pharmacy';
 
 export const initialTenants: Tenant[] = [
@@ -778,7 +779,38 @@ export const initialProducts: Product[] = [
   },
 ];
 
+// Helper to dynamically calculate date strings relative to today
+const getRelativeDateString = (daysOffset: number): string => {
+  const d = new Date();
+  d.setDate(d.getDate() + daysOffset);
+  return d.toISOString().split('T')[0];
+};
+
 export const initialBatches: Batch[] = [
+  {
+    id: 'b-coartem-fefo30',
+    tenantId: 't-abyssinia',
+    productId: 'prod-coartem',
+    supplierId: 'sup-epss',
+    batchNumber: 'CRT-26-042',
+    manufactureDate: '2024-01-15',
+    expiryDate: getRelativeDateString(14), // Strictly expiring in 14 days! (FEFO Priority #1)
+    costPrice: 12.00,
+    sellingPrice: 18.00,
+    grnReference: 'GRN-2024-088',
+  },
+  {
+    id: 'b-gluc-fefo30',
+    tenantId: 't-abyssinia',
+    productId: 'prod-glucophage',
+    supplierId: 'sup-julphar',
+    batchNumber: 'GLU-26-819',
+    manufactureDate: '2024-02-10',
+    expiryDate: getRelativeDateString(26), // Strictly expiring in 26 days! (FEFO Priority #2)
+    costPrice: 3.50,
+    sellingPrice: 6.50,
+    grnReference: 'GRN-2024-092',
+  },
   {
     id: 'b-amox-01',
     tenantId: 't-abyssinia',
@@ -866,6 +898,37 @@ export const initialBatches: Batch[] = [
 ];
 
 export const initialStockBalances: StockBalance[] = [
+  // Batches expiring within 30 days for proactive FEFO management
+  {
+    id: 'sb-coartem-store',
+    tenantId: 't-abyssinia',
+    locationId: 'loc-store',
+    productId: 'prod-coartem',
+    batchId: 'b-coartem-fefo30',
+    quantity: 168, // 7 boxes (168 tablets) in store warehouse
+    reserved: 0,
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'sb-coartem-disp',
+    tenantId: 't-abyssinia',
+    locationId: 'loc-disp',
+    productId: 'prod-coartem',
+    batchId: 'b-coartem-fefo30',
+    quantity: 72, // 3 boxes (72 tablets) ready at dispensary counter
+    reserved: 0,
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'sb-gluc-disp',
+    tenantId: 't-abyssinia',
+    locationId: 'loc-disp',
+    productId: 'prod-glucophage',
+    batchId: 'b-gluc-fefo30',
+    quantity: 250, // 5 boxes (250 tablets) ready at dispensary counter
+    reserved: 0,
+    updatedAt: new Date().toISOString(),
+  },
   // Dispensary has AMX-24-098 and AMX-24-211
   {
     id: 'sb-1',
@@ -1057,6 +1120,120 @@ export const initialGRNs = [
         unitSellingPrice: 7.00,
       },
     ],
+  },
+];
+
+export const initialSupplierInvoices: SupplierInvoice[] = [
+  {
+    id: 'sinv-1',
+    tenantId: 't-abyssinia',
+    invoiceNumber: 'INV-EPSS-88912',
+    supplierId: 'sup-epss',
+    grnId: 'grn-201',
+    poId: 'po-101',
+    invoiceDate: '2026-09-28T14:30:00Z',
+    dueDate: '2026-10-28T23:59:59Z',
+    totalAmount: 14500.00,
+    paidAmount: 5000.00,
+    status: 'PARTIALLY_PAID',
+    paymentTerms: 'Net 30 Days',
+    payments: [
+      {
+        id: 'spay-1',
+        paymentDate: '2026-09-30T10:00:00Z',
+        amount: 5000.00,
+        paymentMethod: 'CBE_BIRR',
+        referenceNumber: 'CBE-TXN-998231',
+        notes: 'Advance settlement via Commercial Bank of Ethiopia',
+      },
+    ],
+    notes: 'Inbound shipment GRN-2026-0042 from EPSS.',
+  },
+  {
+    id: 'sinv-2',
+    tenantId: 't-abyssinia',
+    invoiceNumber: 'INV-BM-2026-441',
+    supplierId: 'sup-bm',
+    invoiceDate: '2026-09-25T11:00:00Z',
+    dueDate: '2026-10-15T23:59:59Z',
+    totalAmount: 22800.00,
+    paidAmount: 0.00,
+    status: 'UNPAID',
+    paymentTerms: 'Net 20 Days',
+    payments: [],
+    notes: 'Wholesale delivery of infant formulas & medical consumables.',
+  },
+  {
+    id: 'sinv-3',
+    tenantId: 't-abyssinia',
+    invoiceNumber: 'INV-JULPHAR-1092',
+    supplierId: 'sup-julphar',
+    invoiceDate: '2026-09-15T09:30:00Z',
+    dueDate: '2026-10-05T23:59:59Z',
+    totalAmount: 12400.00,
+    paidAmount: 12400.00,
+    status: 'PAID',
+    paymentTerms: 'Immediate',
+    payments: [
+      {
+        id: 'spay-2',
+        paymentDate: '2026-09-16T14:20:00Z',
+        amount: 12400.00,
+        paymentMethod: 'BANK_TRANSFER',
+        referenceNumber: 'AWASH-FT-004921',
+        notes: 'Full payment cleared via Awash Bank EFT',
+      },
+    ],
+    notes: 'Glucophage and cardiovascular medicines consignment.',
+  },
+];
+
+export const initialStockMovements: StockMovement[] = [
+  {
+    id: 'sm-1',
+    tenantId: 't-abyssinia',
+    movementType: 'GRN_INTAKE',
+    referenceNumber: 'GRN-2026-0042',
+    destinationLocationId: 'loc-store',
+    productId: 'prod-amoxil',
+    batchId: 'b-amox-01',
+    quantity: 1000,
+    unitCost: 4.50,
+    unitPrice: 7.00,
+    notes: 'Inbound GRN receipt from EPSS into Central Store Warehouse',
+    performedByUserId: 'u-2',
+    createdAt: '2026-09-28T14:30:00Z',
+  },
+  {
+    id: 'sm-2',
+    tenantId: 't-abyssinia',
+    movementType: 'STORE_TO_DISPENSARY_TRANSFER',
+    referenceNumber: 'TRF-2026-0018',
+    sourceLocationId: 'loc-store',
+    destinationLocationId: 'loc-disp',
+    productId: 'prod-amoxil',
+    batchId: 'b-amox-01',
+    quantity: 450,
+    unitCost: 4.50,
+    unitPrice: 7.00,
+    notes: 'Replenishment transfer to Ground Dispensary counter',
+    performedByUserId: 'u-2',
+    createdAt: '2026-09-29T10:00:00Z',
+  },
+  {
+    id: 'sm-3',
+    tenantId: 't-abyssinia',
+    movementType: 'POS_DISPENSE',
+    referenceNumber: 'INV-2026-00118',
+    sourceLocationId: 'loc-disp',
+    productId: 'prod-amoxil',
+    batchId: 'b-amox-01',
+    quantity: 10,
+    unitCost: 4.50,
+    unitPrice: 7.00,
+    notes: 'FEFO retail POS sale to walk-in patient',
+    performedByUserId: 'u-3',
+    createdAt: '2026-09-29T11:20:00Z',
   },
 ];
 
