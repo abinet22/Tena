@@ -48,6 +48,8 @@ export interface User {
   email: string;
   phone: string;
   password?: string;
+  branchName?: string;
+  assignedBranchNames?: string[]; // Multiple branches supported for multi-branch staff
   isPlatformAdmin?: boolean; // true if SaaS Super Admin controlling all pharmacies
   isActive: boolean;
   avatarUrl?: string;
@@ -59,6 +61,7 @@ export interface Location {
   tenantId: string;
   name: string;
   code: string;
+  branchName?: string;
   type: LocationType;
   isDefault: boolean;
   phone?: string;
@@ -263,11 +266,14 @@ export interface TransferOrder {
   id: string;
   tenantId: string;
   transferNumber: string;
-  sourceLocationId: string; // Store
-  destinationLocationId: string; // Dispensary
+  transferType?: 'INTERNAL_STORE_DISPENSARY' | 'INTER_BRANCH';
+  sourceLocationId: string; // Store or Branch
+  destinationLocationId: string; // Dispensary or Destination Branch
   status: TransferStatus;
   requestedBy: string;
   approvedBy?: string;
+  driverName?: string;
+  vehiclePlate?: string;
   createdAt: string;
   receivedAt?: string;
   notes?: string;

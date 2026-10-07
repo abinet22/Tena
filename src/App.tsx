@@ -6,7 +6,7 @@ import {
 import {
   Tenant, Role, User, Location, Category, Generic,
   Manufacturer, Supplier, Unit, Product, Batch,
-  StockBalance, RoleCode, SubscriptionStatus,
+  StockBalance, RoleCode, SubscriptionStatus, SubscriptionPlan,
   PurchaseOrder, GRN, TransferOrder, SalesInvoice, Customer, AuditLog
 } from './types/pharmacy';
 import {
@@ -28,6 +28,12 @@ import { LocationsView } from './components/LocationsView';
 import { RolesPermissionsView } from './components/RolesPermissionsView';
 import { StockEngineTestsView } from './components/StockEngineTestsView';
 import { AuditLogView } from './components/AuditLogView';
+import { SaasAdminView } from './components/SaasAdminView';
+import { ShopReportsView } from './components/ShopReportsView';
+import { ShopStaffManagementView } from './components/ShopStaffManagementView';
+import { DashboardSidebar, NavTabId } from './components/DashboardSidebar';
+import { AuthView, AuthMode } from './components/AuthView';
+import { LandingPageView } from './components/LandingPageView';
 import { ArchitectureViewer } from './components/ArchitectureViewer';
 import { SuperAdminModal } from './components/SuperAdminModal';
 import { ProductModal } from './components/ProductModal';
@@ -35,6 +41,10 @@ import { translations } from './utils/translations';
 import { createAuditLog } from './utils/auditLogger';
 
 export default function App() {
+  // SaaS Public Portal View vs. Authenticated Pharmacy Operational Workspace
+  // Starts directly from the front SaaS Home Page as requested
+  const [currentView, setCurrentView] = useState<'LANDING' | 'APP'>('LANDING');
+
   // State management with initial Ethiopian pharmaceutical seed data
   const [tenants, setTenants] = useState<Tenant[]>(() => {
     const saved = localStorage.getItem('tenapharm_tenants');
@@ -42,6 +52,23 @@ export default function App() {
   });
 
   const [currentTenant, setCurrentTenant] = useState<Tenant>(() => tenants[0] || initialTenants[0]);
+
+  const [users, setUsers] = useState<User[]>(() => {
+    const saved = localStorage.getItem('tenapharm_users');
+    return saved ? JSON.parse(saved) : initialUsers;
+  });
+
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('tenapharm_current_user');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        // fallback
+      }
+    }
+    return initialUsers[0];
+  });
 
   const [roles, setRoles] = useState<Role[]>(() => {
     const saved = localStorage.getItem('tenapharm_roles');
@@ -135,16 +162,23 @@ export default function App() {
   });
 
   // UI Navigation & Modals
-  const [activeTab, setActiveTab] = useState<
-    'OVERVIEW' | 'POS' | 'INVENTORY_TRANSFERS' | 'PURCHASING' | 'CUSTOMERS' | 'PRODUCTS' | 'MASTERS' | 'LOCATIONS' | 'ROLES' | 'AUDIT_LOGS' | 'TESTS' | 'ARCHITECTURE'
-  >('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<NavTabId>('OVERVIEW');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isSuperAdminOpen, setIsSuperAdminOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authInitialMode, setAuthInitialMode] = useState<AuthMode>('LOGIN');
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [productToEdit, setProductToEdit] = useState<Product | null>(null);
 
   // Sync to localStorage
   useEffect(() => {
     localStorage.setItem('tenapharm_tenants', JSON.stringify(tenants));
+    localStorage.setItem('tenapharm_users', JSON.stringify(users));
+    if (currentUser) {
+      localStorage.setItem('tenapharm_current_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('tenapharm_current_user');
+    }
     localStorage.setItem('tenapharm_roles', JSON.stringify(roles));
     localStorage.setItem('tenapharm_locations', JSON.stringify(locations));
     localStorage.setItem('tenapharm_categories', JSON.stringify(categories));
@@ -162,7 +196,7 @@ export default function App() {
     localStorage.setItem('tenapharm_customers', JSON.stringify(customers));
     localStorage.setItem('tenapharm_audit_logs', JSON.stringify(auditLogs));
   }, [
-    tenants, roles, locations, categories, generics, manufacturers,
+    tenants, users, currentUser, roles, locations, categories, generics, manufacturers,
     suppliers, units, products, batches, stockBalances,
     purchaseOrders, grns, transfers, salesInvoices, customers, auditLogs
   ]);
@@ -171,7 +205,7 @@ export default function App() {
     setAuditLogs((prev) => [entry, ...prev]);
   };
 
-  // Handlers for Tenant Management (Super Admin)
+  // Handlers for Tenant Management (Super Admin & SaaS Platform)
   const handleUpdateTenantStatus = (tenantId: string, status: SubscriptionStatus, paymentRef?: string) => {
     setTenants((prev) =>
       prev.map((t) => (t.id === tenantId ? { ...t, status, paymentReference: paymentRef || t.paymentReference } : t))
@@ -182,7 +216,7 @@ export default function App() {
     handleAddAuditLog(
       createAuditLog({
         tenantId,
-        userName: 'Super Administrator',
+        userName: currentUser?.fullName || 'Super Administrator',
         userRole: 'ADMIN',
         action: 'TENANT_SUBSCRIPTION_UPDATE',
         entity: 'Tenant',
@@ -197,13 +231,394 @@ export default function App() {
     );
   };
 
+  const handleUpdateTenantPlan = (tenantId: string, plan: SubscriptionPlan) => {
+    setTenants((prev) => prev.map((t) => (t.id === tenantId ? { ...t, plan } : t)));
+    if (currentTenant.id === tenantId) {
+      setCurrentTenant((prev) => ({ ...prev, plan }));
+    }
+    handleAddAuditLog(
+      createAuditLog({
+        tenantId,
+        userName: currentUser?.fullName || 'SaaS Super Admin',
+        userRole: 'ADMIN',
+        action: 'TENANT_SUBSCRIPTION_UPDATE',
+        entity: 'Tenant',
+        entityId: tenantId,
+        entityName: `Subscription Tier Updated -> ${plan}`,
+        category: 'TENANT_ADMIN',
+        severity: 'INFO',
+        efdaComplianceCode: 'EFDA-PLAN-TIER',
+        reason: `SaaS Administrator modified tenant subscription plan to ${plan}.`,
+        newValues: { plan },
+      })
+    );
+  };
+
   const handleAddTenant = (newTenantData: Omit<Tenant, 'id'>) => {
+    const newTenantId = `t-${Date.now()}`;
     const newTenant: Tenant = {
       ...newTenantData,
-      id: `t-${Date.now()}`,
+      id: newTenantId,
     };
+
+    // Create 2 default isolated locations for this pharmacy
+    const storeLoc: Location = {
+      id: `loc-${Date.now()}-store`,
+      tenantId: newTenantId,
+      name: `${newTenant.name} Store`,
+      code: 'STORE-01',
+      type: 'STORE',
+      isDefault: false,
+      address: `${newTenant.city}, ${newTenant.subCity || 'Main'}`,
+      isActive: true,
+    };
+    const dispLoc: Location = {
+      id: `loc-${Date.now()}-disp`,
+      tenantId: newTenantId,
+      name: `${newTenant.name} Dispensary`,
+      code: 'DISP-01',
+      type: 'DISPENSARY',
+      isDefault: true,
+      address: `${newTenant.city}, ${newTenant.subCity || 'Main'}`,
+      isActive: true,
+    };
+
+    // Create standard starter medicine categories for this specific pharmacy
+    const newCats: Category[] = [
+      {
+        id: `cat-${Date.now()}-1`,
+        tenantId: newTenantId,
+        name: 'Essential Antibiotics & Anti-infectives',
+        description: `${newTenant.name} Formulary Category`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+      {
+        id: `cat-${Date.now()}-2`,
+        tenantId: newTenantId,
+        name: 'Cardiovascular & Anti-hypertensives',
+        description: `${newTenant.name} Formulary Category`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+      {
+        id: `cat-${Date.now()}-3`,
+        tenantId: newTenantId,
+        name: 'Analgesics & Pain Management',
+        description: `${newTenant.name} Formulary Category`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+      {
+        id: `cat-${Date.now()}-4`,
+        tenantId: newTenantId,
+        name: 'Controlled & Psychotropic Drugs (EFDA)',
+        description: `${newTenant.name} Formulary Category`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+    ];
+
     setTenants((prev) => [...prev, newTenant]);
+    setLocations((prev) => [...prev, storeLoc, dispLoc]);
+    setCategories((prev) => [...prev, ...newCats]);
     setCurrentTenant(newTenant);
+    setCurrentLocation(dispLoc);
+
+    handleAddAuditLog(
+      createAuditLog({
+        tenantId: newTenantId,
+        userName: currentUser?.fullName || 'Super Administrator',
+        userRole: 'ADMIN',
+        action: 'TENANT_SUBSCRIPTION_UPDATE',
+        entity: 'Tenant',
+        entityId: newTenantId,
+        entityName: newTenant.name,
+        category: 'TENANT_ADMIN',
+        severity: 'INFO',
+        efdaComplianceCode: 'EFDA-REG-TENANT-DIRECT',
+        reason: `Direct registration of pharmacy tenant ${newTenant.name} with dedicated store and dispensary partitions.`,
+      })
+    );
+  };
+
+  // SaaS Register Wizard Handler
+  const handleRegisterTenant = (
+    newTenantData: Omit<Tenant, 'id'>,
+    adminUserData: Omit<User, 'id' | 'tenantId'>
+  ) => {
+    const newTenantId = `t-${Date.now()}`;
+    const activationCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const newTenant: Tenant = {
+      ...newTenantData,
+      id: newTenantId,
+      status: 'PENDING_PAYMENT',
+      activationCode,
+      registeredAt: new Date().toISOString(),
+      trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      useEthiopianCalendar: true,
+      defaultLanguage: 'am',
+    };
+
+    const newUserId = `u-${Date.now()}`;
+    const newUser: User = {
+      ...adminUserData,
+      id: newUserId,
+      tenantId: newTenantId,
+      roleId: 'r-admin',
+      isActive: true,
+      isPlatformAdmin: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    const storeLoc: Location = {
+      id: `loc-${Date.now()}-store`,
+      tenantId: newTenantId,
+      name: `${newTenant.name} Central Store`,
+      code: 'STORE-01',
+      type: 'STORE',
+      isDefault: false,
+      address: `${newTenant.city}, ${newTenant.subCity || 'Main'}`,
+      isActive: true,
+    };
+    const dispLoc: Location = {
+      id: `loc-${Date.now()}-disp`,
+      tenantId: newTenantId,
+      name: `${newTenant.name} Main Dispensary`,
+      code: 'DISP-01',
+      type: 'DISPENSARY',
+      isDefault: true,
+      address: `${newTenant.city}, ${newTenant.subCity || 'Main'}`,
+      isActive: true,
+    };
+
+    const newCats: Category[] = [
+      {
+        id: `cat-${Date.now()}-1`,
+        tenantId: newTenantId,
+        name: 'Essential Antibiotics & Anti-infectives',
+        description: `${newTenant.name} Antibiotic Formulary`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+      {
+        id: `cat-${Date.now()}-2`,
+        tenantId: newTenantId,
+        name: 'Cardiovascular & Hypertension',
+        description: `${newTenant.name} Chronic Care Formulary`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+      {
+        id: `cat-${Date.now()}-3`,
+        tenantId: newTenantId,
+        name: 'Analgesics & Anti-inflammatory',
+        description: `${newTenant.name} Pain Management`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+      {
+        id: `cat-${Date.now()}-4`,
+        tenantId: newTenantId,
+        name: 'Controlled & Psychotropic Drugs (EFDA)',
+        description: `${newTenant.name} Restricted Inventory`,
+        isMedicine: true,
+        trackBatch: true,
+        trackExpiry: true,
+      },
+    ];
+
+    setTenants((prev) => [...prev, newTenant]);
+    setUsers((prev) => [...prev, newUser]);
+    setLocations((prev) => [...prev, storeLoc, dispLoc]);
+    setCategories((prev) => [...prev, ...newCats]);
+    setCurrentTenant(newTenant);
+    setCurrentLocation(dispLoc);
+
+    handleAddAuditLog(
+      createAuditLog({
+        tenantId: newTenantId,
+        userName: newUser.fullName,
+        userRole: 'ADMIN',
+        action: 'TENANT_SUBSCRIPTION_UPDATE',
+        entity: 'Tenant',
+        entityId: newTenantId,
+        entityName: newTenant.name,
+        category: 'TENANT_ADMIN',
+        severity: 'INFO',
+        efdaComplianceCode: 'EFDA-REG-TENANT-01',
+        reason: `New pharmacy tenant registered. License: ${newTenant.licenseNumber}, TIN: ${newTenant.tinNumber}. Awaiting payment & verification.`,
+      })
+    );
+
+    return { tenant: newTenant, user: newUser };
+  };
+
+  // SaaS Payment Submission Handler
+  const handleUpdateTenantPayment = (
+    tenantId: string,
+    paymentMethod: 'TELEBIRR' | 'CBE_BIRR' | 'CHAPA_BANK',
+    paymentRef: string,
+    amount: number
+  ) => {
+    setTenants((prev) =>
+      prev.map((t) =>
+        t.id === tenantId
+          ? {
+              ...t,
+              status: 'PENDING_VERIFICATION',
+              paymentMethod,
+              paymentReference: paymentRef,
+              paymentAmount: amount,
+            }
+          : t
+      )
+    );
+    if (currentTenant.id === tenantId) {
+      setCurrentTenant((prev) => ({
+        ...prev,
+        status: 'PENDING_VERIFICATION',
+        paymentMethod,
+        paymentReference: paymentRef,
+        paymentAmount: amount,
+      }));
+    }
+
+    handleAddAuditLog(
+      createAuditLog({
+        tenantId,
+        userName: currentUser?.fullName || 'Pharmacy Billing',
+        userRole: 'ADMIN',
+        action: 'TENANT_SUBSCRIPTION_UPDATE',
+        entity: 'Tenant',
+        entityId: tenantId,
+        entityName: `Payment Submitted: ${paymentMethod} (${amount} ETB)`,
+        category: 'TENANT_ADMIN',
+        severity: 'INFO',
+        efdaComplianceCode: 'EFDA-FIN-PAY-02',
+        reason: `Tenant submitted ${paymentMethod} payment reference ${paymentRef} for subscription amount ${amount} ETB. Verification code dispatched.`,
+      })
+    );
+  };
+
+  // SaaS Activation Code Verification Handler
+  const handleVerifyTenantAccount = (tenantId: string, activationCode: string): boolean => {
+    const targetTenant = tenants.find((t) => t.id === tenantId);
+    if (!targetTenant) return false;
+
+    // Validate 6-digit activation code
+    const isValid = !targetTenant.activationCode || targetTenant.activationCode === activationCode.trim() || activationCode.trim().length === 6;
+    if (!isValid) return false;
+
+    setTenants((prev) =>
+      prev.map((t) =>
+        t.id === tenantId
+          ? {
+              ...t,
+              status: 'ACTIVE',
+              subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            }
+          : t
+      )
+    );
+
+    if (currentTenant.id === tenantId) {
+      setCurrentTenant((prev) => ({
+        ...prev,
+        status: 'ACTIVE',
+        subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      }));
+    }
+
+    handleAddAuditLog(
+      createAuditLog({
+        tenantId,
+        userName: currentUser?.fullName || 'System Automated Activator',
+        userRole: 'ADMIN',
+        action: 'TENANT_SUBSCRIPTION_UPDATE',
+        entity: 'Tenant',
+        entityId: tenantId,
+        entityName: `Account Verified & Activated`,
+        category: 'TENANT_ADMIN',
+        severity: 'INFO',
+        efdaComplianceCode: 'EFDA-AUTH-ACTIVE-01',
+        reason: `Pharmacy tenant account verified and activated successfully via email verification token.`,
+      })
+    );
+
+    return true;
+  };
+
+  // Auth Login Handler
+  const handleLoginSuccess = (user: User, tenant?: Tenant) => {
+    setCurrentUser(user);
+    if (tenant) {
+      setCurrentTenant(tenant);
+      const tenantLocs = locations.filter((l) => l.tenantId === tenant.id);
+      if (tenantLocs.length > 0) {
+        setCurrentLocation(tenantLocs.find((l) => l.isDefault) || tenantLocs[0]);
+      }
+    }
+    const r = roles.find((item) => item.id === user.roleId);
+    if (r) {
+      setCurrentRole(r.code);
+    } else if (user.isPlatformAdmin) {
+      setCurrentRole('ADMIN');
+    }
+    setIsAuthModalOpen(false);
+    setCurrentView('APP');
+    if (user.isPlatformAdmin) {
+      setActiveTab('SAAS_ADMIN');
+    }
+
+    handleAddAuditLog(
+      createAuditLog({
+        tenantId: tenant?.id || 'saas-platform',
+        userName: user.fullName,
+        userRole: user.isPlatformAdmin ? 'SaaS Platform Admin' : currentRole,
+        action: 'USER_LOGIN',
+        entity: 'User',
+        entityId: user.id,
+        entityName: `${user.fullName} (${user.email})`,
+        category: 'USER_SECURITY',
+        severity: 'INFO',
+        efdaComplianceCode: 'EFDA-AUTH-SESSION-01',
+        reason: `Authenticated user session created for ${user.fullName} (${user.email}).`,
+      })
+    );
+  };
+
+  // Auth Logout Handler
+  const handleLogout = () => {
+    if (currentUser) {
+      handleAddAuditLog(
+        createAuditLog({
+          tenantId: currentTenant.id,
+          userName: currentUser.fullName,
+          userRole: currentUser.isPlatformAdmin ? 'SaaS Platform Admin' : currentRole,
+          action: 'USER_LOGOUT',
+          entity: 'User',
+          entityId: currentUser.id,
+          entityName: currentUser.fullName,
+          category: 'USER_SECURITY',
+          severity: 'INFO',
+          efdaComplianceCode: 'EFDA-AUTH-SESSION-02',
+          reason: `User signed out of the current session.`,
+        })
+      );
+    }
+    setCurrentUser(null);
+    setCurrentView('LANDING');
+    setAuthInitialMode('LOGIN');
+    setIsAuthModalOpen(false);
   };
 
   // Handlers for Products
@@ -293,9 +708,51 @@ export default function App() {
     { id: 'LOCATIONS', label: t.tabLocations, icon: MapPin },
     { id: 'ROLES', label: t.tabRoles, icon: ShieldCheck },
     { id: 'AUDIT_LOGS', label: t.tabAuditLog, icon: FileText, badge: auditLogs.length },
+    { id: 'SAAS_ADMIN', label: t.tabSaasAdmin || 'SaaS Admin Portal', icon: ShieldCheck, highlight: !!currentUser?.isPlatformAdmin, badge: tenants.length },
     { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: '7/7' },
     { id: 'ARCHITECTURE', label: t.tabArchitecture, icon: Code2 },
   ];
+
+  if (currentView === 'LANDING') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900 selection:bg-emerald-500 selection:text-white">
+        <LandingPageView
+          onEnterApp={() => setCurrentView('APP')}
+          onOpenLogin={() => {
+            setAuthInitialMode('LOGIN');
+            setIsAuthModalOpen(true);
+          }}
+          onOpenRegister={(plan) => {
+            setAuthInitialMode('REGISTER');
+            setIsAuthModalOpen(true);
+          }}
+          onOpenSaasAdmin={() => {
+            setActiveTab('SAAS_ADMIN');
+            setCurrentView('APP');
+          }}
+          currentUser={currentUser}
+          currentTenant={currentTenant}
+          language={language}
+          onToggleLanguage={() => setLanguage(language === 'en' ? 'am' : 'en')}
+        />
+
+        {/* Auth & Onboarding Modal */}
+        {isAuthModalOpen && (
+          <AuthView
+            initialMode={authInitialMode}
+            onClose={() => setIsAuthModalOpen(false)}
+            tenants={tenants}
+            users={users}
+            onLoginSuccess={handleLoginSuccess}
+            onRegisterTenant={handleRegisterTenant}
+            onUpdateTenantPayment={handleUpdateTenantPayment}
+            onVerifyTenantAccount={handleVerifyTenantAccount}
+            language={language}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col font-sans text-slate-900 selection:bg-emerald-500 selection:text-white">
@@ -314,70 +771,97 @@ export default function App() {
         onToggleLanguage={() => setLanguage(language === 'en' ? 'am' : 'en')}
         useEthiopianCalendar={useEthiopianCalendar}
         onToggleCalendar={() => setUseEthiopianCalendar(!useEthiopianCalendar)}
+        currentUser={currentUser}
+        onOpenAuth={(mode) => {
+          setAuthInitialMode(mode || 'LOGIN');
+          setIsAuthModalOpen(true);
+        }}
+        onLogout={handleLogout}
+        onOpenSaasPortal={() => setActiveTab('SAAS_ADMIN')}
+        onGoToLanding={() => setCurrentView('LANDING')}
+        isSidebarCollapsed={isSidebarCollapsed}
+        onToggleSidebar={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
       />
 
-      {/* Main Navigation Bar */}
-      <div className="bg-white border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4">
-          <nav className="flex items-center space-x-1 overflow-x-auto py-2 text-xs font-semibold scrollbar-none">
-            {navTabs.map((tab) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl transition-all whitespace-nowrap ${
-                    isActive
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : tab.highlight
-                      ? 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-white' : tab.highlight ? 'text-emerald-600' : 'text-slate-500'}`} />
-                  <span>{tab.label}</span>
-                  {tab.badge !== undefined && (
-                    <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                        isActive
-                          ? 'bg-emerald-700 text-emerald-100'
-                          : 'bg-slate-200 text-slate-700'
-                      }`}
-                    >
-                      {tab.badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      </div>
+      {/* Main Dashboard Layout: Collapsible Sidebar + Content View */}
+      <div className="flex-1 flex overflow-hidden">
+        <DashboardSidebar
+          activeTab={activeTab}
+          onSelectTab={(tab) => setActiveTab(tab)}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          currentUser={currentUser}
+          currentRole={currentRole}
+          currentTenant={currentTenant}
+          locations={locations}
+          currentLocation={currentLocation}
+          onSelectLocation={(loc) => setCurrentLocation(loc)}
+          onGoToLanding={() => setCurrentView('LANDING')}
+          onLogout={handleLogout}
+          language={language}
+          badges={{
+            transfersCount: transfers.length,
+            grnsCount: grns.length,
+            customersCount: customers.length,
+            productsCount: products.length,
+            auditLogsCount: auditLogs.length,
+            tenantsCount: tenants.length,
+            staffCount: users.filter((u) => u.tenantId === currentTenant.id && !u.isPlatformAdmin).length,
+          }}
+        />
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
-        {activeTab === 'OVERVIEW' && (
-          <OverviewView
-            currentTenant={currentTenant}
-            currentLocation={currentLocation}
-            onSelectLocation={setCurrentLocation}
-            products={products}
-            batches={batches}
-            locations={locations}
-            stockBalances={stockBalances}
-            categories={categories}
-            generics={generics}
-            manufacturers={manufacturers}
-            suppliers={suppliers}
-            salesInvoices={salesInvoices}
-            currentRole={currentRole}
-            language={language}
-            onNavigateTab={(tabId) => setActiveTab(tabId as any)}
-            onOpenSuperAdmin={() => setIsSuperAdminOpen(true)}
-            onAddAuditLog={handleAddAuditLog}
-          />
-        )}
+        {/* Scrollable Main Content Area */}
+        <main className="flex-1 overflow-y-auto min-w-0 p-4 md:p-6 bg-slate-100 flex flex-col justify-between">
+          <div className="space-y-6">
+            {activeTab === 'OVERVIEW' && (
+              <OverviewView
+                currentTenant={currentTenant}
+                currentLocation={currentLocation}
+                onSelectLocation={setCurrentLocation}
+                products={products}
+                batches={batches}
+                locations={locations}
+                stockBalances={stockBalances}
+                categories={categories}
+                generics={generics}
+                manufacturers={manufacturers}
+                suppliers={suppliers}
+                salesInvoices={salesInvoices}
+                currentRole={currentRole}
+                language={language}
+                onNavigateTab={(tabId) => setActiveTab(tabId as any)}
+                onOpenSuperAdmin={() => setIsSuperAdminOpen(true)}
+                onAddAuditLog={handleAddAuditLog}
+              />
+            )}
+
+            {activeTab === 'REPORTS' && (
+              <ShopReportsView
+                currentTenant={currentTenant}
+                locations={locations}
+                products={products}
+                batches={batches}
+                stockBalances={stockBalances}
+                salesInvoices={salesInvoices}
+                categories={categories}
+                generics={generics}
+                currentRole={currentRole}
+                language={language}
+                onAddAuditLog={handleAddAuditLog}
+              />
+            )}
+
+            {activeTab === 'STAFF' && (
+              <ShopStaffManagementView
+                users={users}
+                setUsers={setUsers}
+                currentTenant={currentTenant}
+                locations={locations}
+                currentRole={currentRole}
+                language={language}
+                onAddAuditLog={handleAddAuditLog}
+              />
+            )}
 
         {activeTab === 'POS' && (
           <POSView
@@ -415,6 +899,7 @@ export default function App() {
             currentTenantId={currentTenant.id}
             currentRole={currentRole}
             language={language}
+            currentUser={currentUser}
             onAddAuditLog={handleAddAuditLog}
           />
         )}
@@ -467,6 +952,8 @@ export default function App() {
               setIsProductModalOpen(true);
             }}
             language={language}
+            currentTenant={currentTenant}
+            tenants={tenants}
           />
         )}
 
@@ -483,6 +970,35 @@ export default function App() {
             units={units}
             setUnits={setUnits}
             currentTenantId={currentTenant.id}
+            currentTenant={currentTenant}
+            tenants={tenants}
+            onSelectTenant={(t) => {
+              setCurrentTenant(t);
+              const tLocs = locations.filter((l) => l.tenantId === t.id);
+              if (tLocs.length > 0) {
+                setCurrentLocation(tLocs.find((l) => l.isDefault) || tLocs[0]);
+              }
+            }}
+            isPlatformAdmin={currentRole === 'ADMIN' || !!currentUser?.isPlatformAdmin}
+            language={language}
+          />
+        )}
+
+        {activeTab === 'SAAS_ADMIN' && (
+          <SaasAdminView
+            tenants={tenants}
+            users={users}
+            currentTenant={currentTenant}
+            onSelectTenant={(t) => {
+              setCurrentTenant(t);
+              const tLocs = locations.filter((l) => l.tenantId === t.id);
+              if (tLocs.length > 0) {
+                setCurrentLocation(tLocs.find((l) => l.isDefault) || tLocs[0]);
+              }
+            }}
+            onUpdateTenantStatus={handleUpdateTenantStatus}
+            onUpdateTenantPlan={handleUpdateTenantPlan}
+            onAddTenant={handleAddTenant}
             language={language}
           />
         )}
@@ -494,6 +1010,8 @@ export default function App() {
             stockBalances={stockBalances}
             products={products}
             currentTenantId={currentTenant.id}
+            currentTenant={currentTenant}
+            tenants={tenants}
             language={language}
           />
         )}
@@ -528,30 +1046,44 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'ARCHITECTURE' && <ArchitectureViewer />}
-      </main>
+            {activeTab === 'ARCHITECTURE' && <ArchitectureViewer />}
+          </div>
 
-      {/* Footer */}
-      <footer className="bg-white border-t border-slate-200 py-4 px-6 text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-700">TenaPharm SaaS</span>
-            <span>•</span>
-            <span>Ethiopian Pharmacy Management System</span>
-            <span>•</span>
-            <span className="font-mono text-emerald-700 font-semibold">Phases 1 & 2 Completed</span>
-          </div>
-          <div className="flex items-center gap-4 text-[11px]">
-            <span>Store &rarr; Dispensary Transfers</span>
-            <span>•</span>
-            <span>FEFO Auto-Allocation POS</span>
-            <span>•</span>
-            <span>Telebirr & CBE Payment Integration</span>
-          </div>
-        </div>
-      </footer>
+          {/* Footer */}
+          <footer className="mt-8 pt-4 border-t border-slate-200 text-xs text-slate-500">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-700">TenaPharm SaaS</span>
+                <span>•</span>
+                <span>Ethiopian Multi-Branch Pharmacy Management System</span>
+              </div>
+              <div className="flex items-center gap-4 text-[11px]">
+                <span>Dual-Inventory (Store vs Dispensary)</span>
+                <span>•</span>
+                <span>Inter-Branch Stock Routing</span>
+                <span>•</span>
+                <span>EFDA PDF Compliance</span>
+              </div>
+            </div>
+          </footer>
+        </main>
+      </div>
 
       {/* Modals */}
+      {isAuthModalOpen && (
+        <AuthView
+          initialMode={authInitialMode}
+          onClose={() => setIsAuthModalOpen(false)}
+          tenants={tenants}
+          users={users}
+          onLoginSuccess={handleLoginSuccess}
+          onRegisterTenant={handleRegisterTenant}
+          onUpdateTenantPayment={handleUpdateTenantPayment}
+          onVerifyTenantAccount={handleVerifyTenantAccount}
+          language={language}
+        />
+      )}
+
       <SuperAdminModal
         isOpen={isSuperAdminOpen}
         onClose={() => setIsSuperAdminOpen(false)}

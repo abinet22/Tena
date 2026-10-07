@@ -25,7 +25,14 @@ export const translations = {
     tabRoles: 'RBAC & Permissions',
     tabStockTests: 'Stock Engine & FEFO Tests',
     tabAuditLog: 'EFDA Audit Log',
+    tabSaasAdmin: 'SaaS Admin Portal',
     tabArchitecture: 'Architecture & Code Specs',
+
+    // SaaS & Auth
+    login: 'Sign In',
+    registerPharmacy: 'Register Pharmacy',
+    logout: 'Sign Out',
+    platformAdmin: 'SaaS Platform Admin',
 
     // Statuses
     active: 'Active',
@@ -101,7 +108,14 @@ export const translations = {
     tabRoles: 'ሚናዎች እና ፈቃዶች',
     tabStockTests: 'የስቶክ ሞተር እና FEFO ፍተሻ',
     tabAuditLog: 'የኦዲት መዝገብ (EFDA)',
+    tabSaasAdmin: 'የሳስ አድሚን ፖርታል',
     tabArchitecture: 'የሲስተም መዋቅር እና ኮድ',
+
+    // SaaS & Auth
+    login: 'ግባ (Login)',
+    registerPharmacy: 'አዲስ ፋርማሲ መዝግብ',
+    logout: 'ውጣ (Logout)',
+    platformAdmin: 'የሳስ ዋና አስተዳዳሪ',
 
     // Statuses
     active: 'ንቁ (የተፈቀደ)',

@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ArrowRightLeft, Warehouse, Store, AlertTriangle,
   CheckCircle2, Clock, Plus, Trash2, ShieldAlert,
-  Search, Filter, FileText, ArrowDownRight, Tag
+  Search, Filter, FileText, ArrowDownRight, Tag, Truck,
+  Building2, MapPin
 } from 'lucide-react';
 import {
   StockBalance, Product, Batch, Location, TransferOrder,
-  StockAdjustment, StockWriteOff, RoleCode, Category, AuditLog
+  StockAdjustment, StockWriteOff, RoleCode, Category, AuditLog, User
 } from '../types/pharmacy';
 import { sanitizePriceForRole, formatBaseQuantityInUnits } from '../utils/stockEngine';
 import { formatDualDate } from '../utils/ethiopianCalendar';
@@ -24,6 +25,7 @@ interface InventoryTransfersViewProps {
   currentTenantId: string;
   currentRole: RoleCode;
   language: 'en' | 'am';
+  currentUser?: User | null;
   onAddAuditLog?: (entry: AuditLog) => void;
 }
 
@@ -39,19 +41,33 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
   currentTenantId,
   currentRole,
   language,
+  currentUser,
   onAddAuditLog,
 }) => {
   const [activeTab, setActiveTab] = useState<'BALANCES' | 'TRANSFERS' | 'WRITEOFFS'>('BALANCES');
   const [selectedLocFilter, setSelectedLocFilter] = useState<string>('ALL');
+  const [inventoryKindFilter, setInventoryKindFilter] = useState<'ALL' | 'STORE' | 'DISPENSARY'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [onlyExpiring, setOnlyExpiring] = useState(false);
   const [onlyLowStock, setOnlyLowStock] = useState(false);
 
-  // Transfer Modal State
+  // Tenant-scoped locations
+  const tenantLocations = useMemo(() => {
+    return locations.filter((l) => l.tenantId === currentTenantId);
+  }, [locations, currentTenantId]);
+
+  const defaultStoreLoc = tenantLocations.find((l) => l.type === 'STORE') || tenantLocations[0];
+  const defaultDispLoc = tenantLocations.find((l) => l.type === 'DISPENSARY') || tenantLocations[1] || tenantLocations[0];
+
+  // Transfer Modal State - Dynamic Multi-Branch & Inter-Branch
   const [showTransferModal, setShowTransferModal] = useState(false);
+  const [sourceLocationId, setSourceLocationId] = useState<string>(defaultStoreLoc?.id || '');
+  const [destLocationId, setDestLocationId] = useState<string>(defaultDispLoc?.id || '');
   const [transferBatchId, setTransferBatchId] = useState('');
   const [transferQty, setTransferQty] = useState<number>(50);
   const [transferNotes, setTransferNotes] = useState('');
+  const [driverName, setDriverName] = useState('Tesfaye Alemu (Logistics)');
+  const [vehiclePlate, setVehiclePlate] = useState('AA-3-98214');
   const [transferError, setTransferError] = useState<string | null>(null);
 
   // Write-Off Modal State
@@ -60,9 +76,6 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
   const [writeOffReason, setWriteOffReason] = useState<'EXPIRED' | 'DAMAGED' | 'RECALLED_EFDA'>('EXPIRED');
   const [writeOffQty, setWriteOffQty] = useState<number>(10);
   const [writeOffCertRef, setWriteOffCertRef] = useState('EFDA-DISP-2026-09');
-
-  const storeLoc = locations.find((l) => l.type === 'STORE') || locations[0];
-  const dispLoc = locations.find((l) => l.type === 'DISPENSARY') || locations[1] || locations[0];
 
   const now = new Date();
 
@@ -76,10 +89,14 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
     return { label: 'Normal', color: 'bg-emerald-100 text-emerald-800 border-emerald-300' };
   };
 
-  // Filtered Stock Balances
+  // Filtered Stock Balances with Two Inventory Types (Store vs Dispensary)
   const filteredBalances = stockBalances.filter((bal) => {
     if (bal.quantity <= 0) return false;
+    const loc = tenantLocations.find((l) => l.id === bal.locationId);
+    if (!loc) return false;
+
     if (selectedLocFilter !== 'ALL' && bal.locationId !== selectedLocFilter) return false;
+    if (inventoryKindFilter !== 'ALL' && loc.type !== inventoryKindFilter) return false;
 
     const prod = products.find((p) => p.id === bal.productId);
     const batch = batches.find((b) => b.id === bal.batchId);
@@ -105,52 +122,72 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
     return true;
   });
 
-  // Available batches in Store for transfer
-  const availableStoreBatches = stockBalances
-    .filter((b) => b.locationId === storeLoc.id && b.quantity > 0)
-    .map((b) => {
-      const prod = products.find((p) => p.id === b.productId);
-      const batch = batches.find((bat) => bat.id === b.batchId);
-      return { balance: b, product: prod, batch };
-    })
-    .filter((item) => !!item.product && !!item.batch);
+  // Selected source & destination locations
+  const activeSourceLoc = tenantLocations.find((l) => l.id === sourceLocationId) || defaultStoreLoc;
+  const activeDestLoc = tenantLocations.find((l) => l.id === destLocationId) || defaultDispLoc;
 
-  // Execute Store -> Dispensary Transfer
+  const isInterBranch = activeSourceLoc && activeDestLoc && (activeSourceLoc.branchName !== activeDestLoc.branchName);
+
+  // Available batches in chosen Source Location
+  const availableSourceBatches = useMemo(() => {
+    if (!activeSourceLoc) return [];
+    return stockBalances
+      .filter((b) => b.locationId === activeSourceLoc.id && b.quantity > 0)
+      .map((b) => {
+        const prod = products.find((p) => p.id === b.productId);
+        const batch = batches.find((bat) => bat.id === b.batchId);
+        return { balance: b, product: prod, batch };
+      })
+      .filter((item) => !!item.product && !!item.batch);
+  }, [stockBalances, activeSourceLoc, products, batches]);
+
+  // Execute Transfer (Intra-Branch or Inter-Branch)
   const handleExecuteTransfer = (e: React.FormEvent) => {
     e.preventDefault();
-    const sourceStoreBalance = stockBalances.find(
-      (b) => b.locationId === storeLoc.id && b.batchId === transferBatchId
+    if (!activeSourceLoc || !activeDestLoc) {
+      setTransferError('Please select both source and destination locations.');
+      return;
+    }
+
+    if (activeSourceLoc.id === activeDestLoc.id) {
+      setTransferError('Source and destination cannot be identical. Choose a different destination.');
+      return;
+    }
+
+    const sourceBalance = stockBalances.find(
+      (b) => b.locationId === activeSourceLoc.id && b.batchId === transferBatchId
     );
 
-    if (!sourceStoreBalance || sourceStoreBalance.quantity < transferQty) {
-      setTransferError(`Insufficient stock in Store warehouse. Available: ${sourceStoreBalance?.quantity || 0}`);
+    if (!sourceBalance || sourceBalance.quantity < transferQty) {
+      setTransferError(`Insufficient stock in ${activeSourceLoc.name}. Available: ${sourceBalance?.quantity || 0}`);
       return;
     }
 
     const targetBatch = batches.find((b) => b.id === transferBatchId)!;
     const transferNumber = `TRF-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const transferKind = isInterBranch ? 'INTER_BRANCH' : 'INTERNAL_STORE_DISPENSARY';
 
-    // 1. Atomically deduct from Store balance and increment Dispensary balance
+    // 1. Atomically deduct from Source and increment Destination
     setStockBalances((prev) => {
-      // Deduct from store
+      // Deduct from source
       let updated = prev.map((b) =>
-        b.id === sourceStoreBalance.id ? { ...b, quantity: b.quantity - transferQty } : b
+        b.id === sourceBalance.id ? { ...b, quantity: b.quantity - transferQty } : b
       );
 
-      // Add to dispensary
-      const existingDispBalance = updated.find(
-        (b) => b.locationId === dispLoc.id && b.batchId === transferBatchId
+      // Add to destination
+      const existingDestBalance = updated.find(
+        (b) => b.locationId === activeDestLoc.id && b.batchId === transferBatchId
       );
 
-      if (existingDispBalance) {
+      if (existingDestBalance) {
         updated = updated.map((b) =>
-          b.id === existingDispBalance.id ? { ...b, quantity: b.quantity + transferQty } : b
+          b.id === existingDestBalance.id ? { ...b, quantity: b.quantity + transferQty } : b
         );
       } else {
         updated.push({
           id: `sb-${Date.now()}`,
           tenantId: currentTenantId,
-          locationId: dispLoc.id,
+          locationId: activeDestLoc.id,
           productId: targetBatch.productId,
           batchId: targetBatch.id,
           quantity: transferQty,
@@ -162,19 +199,22 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
       return updated;
     });
 
-    // 2. Append Transfer Document
+    // 2. Append Transfer Document with inter-branch logistics metadata
     const newTransfer: TransferOrder = {
       id: `trf-${Date.now()}`,
       tenantId: currentTenantId,
       transferNumber,
-      sourceLocationId: storeLoc.id,
-      destinationLocationId: dispLoc.id,
+      transferType: transferKind,
+      sourceLocationId: activeSourceLoc.id,
+      destinationLocationId: activeDestLoc.id,
       status: 'RECEIVED',
-      requestedBy: 'Hiwot Girma (Dispensary Pharmacist)',
-      approvedBy: 'Rahel Tadesse (Inventory Mgr)',
+      requestedBy: currentUser?.fullName || 'Rahel Tadesse (Inventory Mgr)',
+      approvedBy: 'Dr. Lead Pharmacist (Shop Admin)',
+      driverName: isInterBranch ? driverName : undefined,
+      vehiclePlate: isInterBranch ? vehiclePlate : undefined,
       createdAt: now.toISOString(),
       receivedAt: now.toISOString(),
-      notes: transferNotes || 'Routine store-to-dispensary shelf replenishment',
+      notes: transferNotes || (isInterBranch ? `Inter-branch stock rebalance between ${activeSourceLoc.branchName} and ${activeDestLoc.branchName}` : 'Routine internal shelf replenishment'),
       items: [
         {
           id: `trfi-${Date.now()}`,
@@ -192,23 +232,28 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
       onAddAuditLog(
         createAuditLog({
           tenantId: currentTenantId,
-          userName: 'Rahel Tadesse',
-          userRole: 'Inventory Manager',
-          action: 'STORE_TRANSFER_APPROVED',
+          userName: currentUser?.fullName || 'Rahel Tadesse',
+          userRole: currentRole.replace('_', ' '),
+          action: isInterBranch ? 'INTER_BRANCH_TRANSFER_DISPATCH' : 'STORE_TRANSFER_APPROVED',
           entity: 'TransferOrder',
           entityId: transferNumber,
-          entityName: `${targetProd?.brandName || 'Medicine'} [Batch: ${targetBatch.batchNumber}] - ${transferQty} Units`,
+          entityName: `${targetProd?.brandName || 'Medicine'} [${targetBatch.batchNumber}] - ${transferQty} Units (${transferKind})`,
           batchNumber: targetBatch.batchNumber,
           category: 'STOCK_ENGINE',
           severity: 'INFO',
-          locationId: storeLoc.id,
-          locationName: storeLoc.name,
-          efdaComplianceCode: 'EFDA-INTERNAL-CHAIN-05',
-          reason: transferNotes || `Internal stock replenishment transfer from ${storeLoc.name} to ${dispLoc.name}.`,
+          locationId: activeSourceLoc.id,
+          locationName: activeSourceLoc.name,
+          efdaComplianceCode: isInterBranch ? 'EFDA-BRANCH-TRANSIT-08' : 'EFDA-INTERNAL-CHAIN-05',
+          reason: transferNotes || `${transferKind}: Dispatched ${transferQty} units from ${activeSourceLoc.name} (${activeSourceLoc.branchName}) to ${activeDestLoc.name} (${activeDestLoc.branchName}).`,
           newValues: {
             transferNumber,
-            sourceLocation: storeLoc.name,
-            destinationLocation: dispLoc.name,
+            transferType: transferKind,
+            sourceLocation: activeSourceLoc.name,
+            sourceBranch: activeSourceLoc.branchName,
+            destinationLocation: activeDestLoc.name,
+            destinationBranch: activeDestLoc.branchName,
+            driverName: isInterBranch ? driverName : null,
+            vehiclePlate: isInterBranch ? vehiclePlate : null,
             quantity: transferQty,
           },
         })
@@ -272,60 +317,91 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <ArrowRightLeft className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-lg font-bold">Inventory Engine & Store &rarr; Dispensary Transfers</h2>
+              <h2 className="text-lg font-bold">
+                {language === 'am' ? 'የስቶክ አስተዳደርና የቅርንጫፍ ዝውውር' : 'Inventory Engine & Multi-Branch Stock Transfers'}
+              </h2>
             </div>
             <p className="text-xs text-slate-300 mt-1 max-w-2xl">
-              Strict multi-location control: Stock is maintained per batch per location. Sales only deplete from <strong>Dispensary</strong>; short stock is replenished from <strong>Store</strong> via transfer vouchers.
+              Strict Dual-Inventory architecture: <strong>Quarantine Store (Bulk Stock)</strong> vs <strong>Dispensary Counter (Ready to Dispense)</strong>. Supports internal shelf replenishment and tracked inter-branch transfers between all pharmacy branches.
             </p>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
-                if (availableStoreBatches.length > 0) {
-                  setTransferBatchId(availableStoreBatches[0].batch!.id);
+                if (availableSourceBatches.length > 0) {
+                  setTransferBatchId(availableSourceBatches[0].batch!.id);
                 }
                 setShowTransferModal(true);
               }}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-xs"
             >
               <ArrowRightLeft className="w-4 h-4" />
-              <span>Transfer Store &rarr; Dispensary</span>
+              <span>{language === 'am' ? '+ አዲስ ስቶክ ዝውውር (መጋዘን / ቅርንጫፍ)' : '+ New Stock Transfer (Internal / Inter-Branch)'}</span>
             </button>
           </div>
         </div>
 
-        {/* Location Stock Summary */}
+        {/* Dual Inventory & Location Stock Summary */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-6 pt-6 border-t border-slate-800 text-xs">
           <div className="bg-slate-800/60 p-3 rounded-xl border border-slate-700">
-            <span className="text-slate-400 block text-[11px]">Central Store Stock</span>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 block text-[11px]">Central Stores (Bulk Stock)</span>
+              <Warehouse className="w-3.5 h-3.5 text-amber-400" />
+            </div>
             <span className="text-lg font-bold text-amber-300 mt-0.5 block">
               {stockBalances
-                .filter((b) => b.locationId === storeLoc.id)
+                .filter((b) => {
+                  const loc = tenantLocations.find((l) => l.id === b.locationId);
+                  return loc?.type === 'STORE';
+                })
                 .reduce((acc, b) => acc + b.quantity, 0)
                 .toLocaleString()}{' '}
               Units
             </span>
+            <span className="text-[10px] text-slate-400">Quarantine & wholesale reserve</span>
           </div>
+
           <div className="bg-slate-800/60 p-3 rounded-xl border border-slate-700">
-            <span className="text-slate-400 block text-[11px]">Front Dispensary Stock</span>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 block text-[11px]">Dispensaries (Ready to Dispense)</span>
+              <Store className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
             <span className="text-lg font-bold text-emerald-300 mt-0.5 block">
               {stockBalances
-                .filter((b) => b.locationId === dispLoc.id)
+                .filter((b) => {
+                  const loc = tenantLocations.find((l) => l.id === b.locationId);
+                  return loc?.type === 'DISPENSARY';
+                })
                 .reduce((acc, b) => acc + b.quantity, 0)
                 .toLocaleString()}{' '}
               Units
             </span>
+            <span className="text-[10px] text-slate-400">Retail shelf for POS selling</span>
           </div>
+
           <div className="bg-slate-800/60 p-3 rounded-xl border border-slate-700">
-            <span className="text-slate-400 block text-[11px]">Completed Transfers</span>
-            <span className="text-lg font-bold text-white mt-0.5 block">{transfers.length} Transfers</span>
-          </div>
-          <div className="bg-slate-800/60 p-3 rounded-xl border border-slate-700">
-            <span className="text-slate-400 block text-[11px]">Expired Quarantine</span>
-            <span className="text-lg font-bold text-rose-400 mt-0.5 block">
-              {batches.filter((b) => new Date(b.expiryDate).getTime() < now.getTime()).length} Batches
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 block text-[11px]">Transfer Vouchers</span>
+              <Truck className="w-3.5 h-3.5 text-blue-400" />
+            </div>
+            <span className="text-lg font-bold text-white mt-0.5 block">
+              {transfers.length} Transfers
             </span>
+            <span className="text-[10px] text-slate-400">
+              {transfers.filter((t) => t.transferType === 'INTER_BRANCH').length} Inter-branch
+            </span>
+          </div>
+
+          <div className="bg-slate-800/60 p-3 rounded-xl border border-slate-700">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 block text-[11px]">Active Branches</span>
+              <Building2 className="w-3.5 h-3.5 text-purple-400" />
+            </div>
+            <span className="text-lg font-bold text-purple-300 mt-0.5 block">
+              {Array.from(new Set(tenantLocations.map((l) => l.branchName || 'Main'))).length} Branches
+            </span>
+            <span className="text-[10px] text-slate-400">{tenantLocations.length} store & dispensary hubs</span>
           </div>
         </div>
       </div>
@@ -368,27 +444,44 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
               />
             </div>
 
-            {/* Location Filter */}
+            {/* Inventory Kind (Store vs Dispensary) Filter */}
             <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
               <button
-                onClick={() => setSelectedLocFilter('ALL')}
-                className={`px-3 py-1 rounded-md font-semibold ${selectedLocFilter === 'ALL' ? 'bg-white shadow-xs text-slate-900' : 'text-slate-600'}`}
+                onClick={() => setInventoryKindFilter('ALL')}
+                className={`px-2.5 py-1 rounded-md font-semibold ${inventoryKindFilter === 'ALL' ? 'bg-white shadow-xs text-slate-900' : 'text-slate-600'}`}
               >
-                All Locations
+                All Kinds
               </button>
               <button
-                onClick={() => setSelectedLocFilter(storeLoc.id)}
-                className={`px-3 py-1 rounded-md font-semibold ${selectedLocFilter === storeLoc.id ? 'bg-amber-100 text-amber-900 shadow-xs' : 'text-slate-600'}`}
+                onClick={() => setInventoryKindFilter('STORE')}
+                className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1 ${inventoryKindFilter === 'STORE' ? 'bg-amber-100 text-amber-900 shadow-xs' : 'text-slate-600'}`}
               >
-                Store Only
+                <Warehouse className="w-3 h-3 text-amber-700" />
+                Store (Stock)
               </button>
               <button
-                onClick={() => setSelectedLocFilter(dispLoc.id)}
-                className={`px-3 py-1 rounded-md font-semibold ${selectedLocFilter === dispLoc.id ? 'bg-emerald-100 text-emerald-900 shadow-xs' : 'text-slate-600'}`}
+                onClick={() => setInventoryKindFilter('DISPENSARY')}
+                className={`px-2.5 py-1 rounded-md font-semibold flex items-center gap-1 ${inventoryKindFilter === 'DISPENSARY' ? 'bg-emerald-100 text-emerald-900 shadow-xs' : 'text-slate-600'}`}
               >
-                Dispensary Only
+                <Store className="w-3 h-3 text-emerald-700" />
+                Dispensary (Dispense)
               </button>
             </div>
+
+            {/* Branch Hub Filter */}
+            <select
+              aria-label="Filter by location"
+              value={selectedLocFilter}
+              onChange={(e) => setSelectedLocFilter(e.target.value)}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-xs font-semibold"
+            >
+              <option value="ALL">All Branches & Hubs ({tenantLocations.length})</option>
+              {tenantLocations.map((loc) => (
+                <option key={loc.id} value={loc.id}>
+                  {loc.branchName || 'Main'} — {loc.name} [{loc.type}]
+                </option>
+              ))}
+            </select>
 
             {/* Quick alert toggles */}
             <div className="flex items-center gap-2">
@@ -519,61 +612,109 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 uppercase text-[11px] font-semibold">
               <tr>
                 <th className="px-4 py-3">Transfer Voucher</th>
-                <th className="px-4 py-3">Origin Store &rarr; Destination</th>
+                <th className="px-4 py-3">Transfer Type</th>
+                <th className="px-4 py-3">Origin &rarr; Destination Hub</th>
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3">Transferred Lines</th>
-                <th className="px-4 py-3">Authorizer & Receiver</th>
+                <th className="px-4 py-3">Logistics & Authorization</th>
                 <th className="px-4 py-3 text-center">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {transfers.map((trf) => (
-                <tr key={trf.id} className="hover:bg-slate-50/80 transition-colors">
-                  <td className="px-4 py-3 font-mono font-bold text-slate-900">{trf.transferNumber}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5 font-medium text-slate-800">
-                      <span className="text-amber-800 font-semibold">Central Store</span>
-                      <span>&rarr;</span>
-                      <span className="text-emerald-800 font-semibold">Front Dispensary</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{formatDualDate(trf.createdAt, language)}</td>
-                  <td className="px-4 py-3">
-                    {trf.items.map((it, idx) => {
-                      const prod = products.find((p) => p.id === it.productId);
-                      const batch = batches.find((b) => b.id === it.batchId);
-                      return (
-                        <div key={idx} className="text-[11px]">
-                          <strong>{prod?.brandName}</strong>: {it.quantity} {prod?.baseUnit}s{' '}
-                          <span className="font-mono text-slate-400">({batch?.batchNumber})</span>
-                        </div>
-                      );
-                    })}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">
-                    <div>Req: {trf.requestedBy}</div>
-                    <div className="text-[10px] text-slate-400">Appr: {trf.approvedBy || 'Auto'}</div>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      {trf.status}
-                    </span>
+              {transfers.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                    No transfer orders posted yet. Click "+ New Stock Transfer" to initiate.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                transfers.map((trf) => {
+                  const sLoc = tenantLocations.find((l) => l.id === trf.sourceLocationId);
+                  const dLoc = tenantLocations.find((l) => l.id === trf.destinationLocationId);
+                  const isInter = trf.transferType === 'INTER_BRANCH' || (sLoc && dLoc && sLoc.branchName !== dLoc.branchName);
+
+                  return (
+                    <tr key={trf.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-4 py-3 font-mono font-bold text-slate-900">
+                        {trf.transferNumber}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                            isInter
+                              ? 'bg-blue-50 text-blue-800 border-blue-200'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          }`}
+                        >
+                          {isInter ? <Truck className="w-3 h-3 text-blue-600" /> : <Store className="w-3 h-3 text-emerald-600" />}
+                          {isInter ? 'Inter-Branch Transfer' : 'Internal Shelf Transfer'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2 font-medium text-slate-800">
+                          <div>
+                            <span className="font-bold text-slate-900">{sLoc?.branchName || 'Origin'}</span>
+                            <span className="text-[10px] text-amber-800 block">
+                              {sLoc?.name || 'Central Store'} [{sLoc?.type || 'STORE'}]
+                            </span>
+                          </div>
+                          <span className="text-slate-400 font-bold">&rarr;</span>
+                          <div>
+                            <span className="font-bold text-slate-900">{dLoc?.branchName || 'Destination'}</span>
+                            <span className="text-[10px] text-emerald-800 block">
+                              {dLoc?.name || 'Retail Dispensary'} [{dLoc?.type || 'DISPENSARY'}]
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">{formatDualDate(trf.createdAt, language)}</td>
+                      <td className="px-4 py-3">
+                        {trf.items.map((it, idx) => {
+                          const prod = products.find((p) => p.id === it.productId);
+                          const batch = batches.find((b) => b.id === it.batchId);
+                          return (
+                            <div key={idx} className="text-[11px]">
+                              <strong>{prod?.brandName}</strong>: {it.quantity} {prod?.baseUnit}s{' '}
+                              <span className="font-mono text-slate-400">({batch?.batchNumber})</span>
+                            </div>
+                          );
+                        })}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">
+                        <div className="font-semibold text-slate-800">Req: {trf.requestedBy}</div>
+                        {trf.driverName && (
+                          <div className="text-[10px] text-blue-700 flex items-center gap-1">
+                            <Truck className="w-2.5 h-2.5" /> Driver: {trf.driverName} ({trf.vehiclePlate || 'Van'})
+                          </div>
+                        )}
+                        <div className="text-[10px] text-slate-400">Appr: {trf.approvedBy || 'Dr. Lead Pharmacist'}</div>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          {trf.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Modal: Store -> Dispensary Transfer */}
+      {/* Modal: Dynamic Internal & Inter-Branch Transfer */}
       {showTransferModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl flex flex-col overflow-hidden border border-slate-200">
             <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-white px-6 py-4 flex items-center justify-between">
               <h3 className="font-bold text-sm flex items-center gap-2">
                 <ArrowRightLeft className="w-5 h-5 text-emerald-300" />
-                <span>Internal Stock Transfer: Store &rarr; Dispensary</span>
+                <span>
+                  {isInterBranch
+                    ? 'Inter-Branch Stock Transfer (ቅርንጫፍ ወደ ቅርንጫፍ)'
+                    : 'Internal Stock Transfer: Store &rarr; Dispensary'}
+                </span>
               </h3>
               <button onClick={() => setShowTransferModal(false)} className="text-emerald-200 hover:text-white">✕</button>
             </div>
@@ -581,41 +722,100 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
             <form onSubmit={handleExecuteTransfer} className="p-6 space-y-4 text-xs">
               {transferError && (
                 <div className="bg-rose-50 border border-rose-300 text-rose-800 p-3 rounded-xl flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-600" />
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
                   <span>{transferError}</span>
                 </div>
               )}
 
-              {/* Source and Destination flow notice */}
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
+              {/* Source & Destination Location Selectors */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
                 <div>
-                  <span className="text-slate-400 block text-[10px] uppercase">From Source:</span>
-                  <span className="font-bold text-amber-800">{storeLoc.name} (Store)</span>
+                  <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">
+                    Source Hub (From Location) *
+                  </label>
+                  <select
+                    value={sourceLocationId}
+                    onChange={(e) => setSourceLocationId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold"
+                  >
+                    {tenantLocations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.branchName || 'Main'} — {loc.name} [{loc.type === 'STORE' ? 'Stock Store' : 'Dispensary'}]
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <ArrowRightLeft className="w-4 h-4 text-emerald-600" />
-                <div className="text-right">
-                  <span className="text-slate-400 block text-[10px] uppercase">To Destination:</span>
-                  <span className="font-bold text-emerald-800">{dispLoc.name} (Dispensary)</span>
+
+                <div>
+                  <label className="text-[10px] uppercase font-bold text-slate-500 mb-1 block">
+                    Destination Hub (To Location) *
+                  </label>
+                  <select
+                    value={destLocationId}
+                    onChange={(e) => setDestLocationId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold"
+                  >
+                    {tenantLocations.map((loc) => (
+                      <option key={loc.id} value={loc.id}>
+                        {loc.branchName || 'Main'} — {loc.name} [{loc.type === 'STORE' ? 'Stock Store' : 'Dispensary'}]
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
+              {/* Transfer Classification Notification */}
+              {isInterBranch ? (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-start gap-2.5 text-blue-900">
+                  <Truck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-xs">
+                      Inter-Branch Transit: {activeSourceLoc?.branchName} &rarr; {activeDestLoc?.branchName}
+                    </div>
+                    <p className="text-[11px] text-blue-700 mt-0.5">
+                      Inter-branch transit requires transport log compliance under EFDA logistics regulations.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-start gap-2.5 text-emerald-900">
+                  <Store className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-xs">
+                      Internal Shelf Replenishment within {activeSourceLoc?.branchName}
+                    </div>
+                    <p className="text-[11px] text-emerald-700 mt-0.5">
+                      Transferring inventory between Store (Stock) and Dispensary (Retail counter) in the same facility.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Batch selection from chosen source location */}
               <div>
                 <label className="font-semibold text-slate-700 mb-1 block">
-                  Select Stock Available in Store Warehouse *
+                  Select Stock Available in Source Location ({availableSourceBatches.length} Batches) *
                 </label>
-                <select
-                  value={transferBatchId}
-                  onChange={(e) => setTransferBatchId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white font-medium"
-                >
-                  {availableStoreBatches.map(({ balance, product, batch }) => (
-                    <option key={batch!.id} value={batch!.id}>
-                      {product!.brandName} — Batch: {batch!.batchNumber} (Store Balance: {balance.quantity} {product!.baseUnit}s • Exp: {batch!.expiryDate})
-                    </option>
-                  ))}
-                </select>
+                {availableSourceBatches.length === 0 ? (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-xs">
+                    No active stock batches found in <strong>{activeSourceLoc?.name}</strong>. Please choose another source hub.
+                  </div>
+                ) : (
+                  <select
+                    value={transferBatchId || availableSourceBatches[0]?.batch?.id}
+                    onChange={(e) => setTransferBatchId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white font-medium text-xs"
+                  >
+                    {availableSourceBatches.map(({ balance, product, batch }) => (
+                      <option key={batch!.id} value={batch!.id}>
+                        {product!.brandName} — Batch: {batch!.batchNumber} (Available: {balance.quantity} {product!.baseUnit}s • Exp: {batch!.expiryDate})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
+              {/* Quantity to transfer */}
               <div>
                 <label className="font-semibold text-slate-700 mb-1 block">
                   Quantity to Transfer (in Base Units) *
@@ -626,18 +826,42 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                   required
                   value={transferQty}
                   onChange={(e) => setTransferQty(parseInt(e.target.value) || 0)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 font-bold text-emerald-800"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 font-bold text-emerald-800 text-sm"
                 />
               </div>
 
+              {/* Inter-Branch Logistics Fields */}
+              {isInterBranch && (
+                <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div>
+                    <label className="font-semibold text-slate-700 mb-1 block">Driver / Dispatcher Name</label>
+                    <input
+                      type="text"
+                      value={driverName}
+                      onChange={(e) => setDriverName(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-semibold text-slate-700 mb-1 block">Vehicle Plate Number</label>
+                    <input
+                      type="text"
+                      value={vehiclePlate}
+                      onChange={(e) => setVehiclePlate(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div>
-                <label className="font-semibold text-slate-700 mb-1 block">Transfer Dispatch Notes</label>
+                <label className="font-semibold text-slate-700 mb-1 block">Transfer Dispatch Notes / Reason</label>
                 <input
                   type="text"
-                  placeholder="e.g. Front counter low on amoxicillin capsules"
+                  placeholder="e.g. Replenishing high demand pediatric syrups"
                   value={transferNotes}
                   onChange={(e) => setTransferNotes(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs"
                 />
               </div>
 
@@ -651,9 +875,11 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold shadow-xs"
+                  disabled={availableSourceBatches.length === 0}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg font-bold shadow-xs flex items-center gap-2"
                 >
-                  Post Transfer & Update Dispensary
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                  <span>Execute Transfer & Update Balances</span>
                 </button>
               </div>
             </form>

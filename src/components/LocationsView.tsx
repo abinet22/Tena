@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MapPin, Warehouse, Store, Plus, CheckCircle2, ShieldCheck, ArrowRightLeft } from 'lucide-react';
-import { Location, LocationType, StockBalance, Product } from '../types/pharmacy';
+import { Location, LocationType, StockBalance, Product, Tenant } from '../types/pharmacy';
+import { Building2 } from 'lucide-react';
 
 interface LocationsViewProps {
   locations: Location[];
@@ -9,6 +10,8 @@ interface LocationsViewProps {
   products: Product[];
   currentTenantId: string;
   language: 'en' | 'am';
+  currentTenant?: Tenant;
+  tenants?: Tenant[];
 }
 
 export const LocationsView: React.FC<LocationsViewProps> = ({
@@ -18,6 +21,8 @@ export const LocationsView: React.FC<LocationsViewProps> = ({
   products,
   currentTenantId,
   language,
+  currentTenant,
+  tenants = [],
 }) => {
   const [showAdd, setShowAdd] = useState(false);
   const [name, setName] = useState('');
@@ -53,6 +58,31 @@ export const LocationsView: React.FC<LocationsViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Pharmacy Company Scope Attribution */}
+      {currentTenant && (
+        <div className="bg-slate-900 text-white px-4 py-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs border border-slate-800 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold">
+              <Building2 className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-100">{currentTenant.name}</span>
+                <span className="bg-emerald-500/20 text-emerald-300 text-[10px] px-1.5 py-0.2 rounded border border-emerald-500/30 font-mono">
+                  {currentTenant.licenseNumber}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                {language === 'am' ? 'የዚህ ፋርማሲ መጋዘኖች እና መሸጫ ቦታዎች' : 'Physical store rooms and dispensing counters partitioned for this pharmacy tenant'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="text-slate-400">{locations.filter(l => l.tenantId === currentTenantId).length} locations configured</span>
+          </div>
+        </div>
+      )}
+
       {/* Information Banner */}
       <div className="bg-gradient-to-r from-emerald-900 to-teal-900 text-white p-5 rounded-2xl shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-4">

@@ -3,9 +3,10 @@ import {
   Pill, Package, Search, Filter, Plus, ShieldAlert,
   FileSpreadsheet, Lock, AlertTriangle, CheckCircle, Tag
 } from 'lucide-react';
-import { Product, Category, Generic, Manufacturer, RoleCode } from '../types/pharmacy';
+import { Product, Category, Generic, Manufacturer, RoleCode, Tenant } from '../types/pharmacy';
 import { sanitizePriceForRole } from '../utils/stockEngine';
 import { translations } from '../utils/translations';
+import { Building2 } from 'lucide-react';
 
 interface ProductsRegisterViewProps {
   products: Product[];
@@ -16,6 +17,8 @@ interface ProductsRegisterViewProps {
   onOpenAddModal: () => void;
   onEditProduct: (p: Product) => void;
   language: 'en' | 'am';
+  currentTenant?: Tenant;
+  tenants?: Tenant[];
 }
 
 export const ProductsRegisterView: React.FC<ProductsRegisterViewProps> = ({
@@ -27,6 +30,8 @@ export const ProductsRegisterView: React.FC<ProductsRegisterViewProps> = ({
   onOpenAddModal,
   onEditProduct,
   language,
+  currentTenant,
+  tenants = [],
 }) => {
   const t = translations[language];
   const [searchQuery, setSearchQuery] = useState('');
@@ -63,6 +68,36 @@ export const ProductsRegisterView: React.FC<ProductsRegisterViewProps> = ({
 
   return (
     <div className="space-y-4">
+      {/* Pharmacy Company Scope Attribution */}
+      {currentTenant && (
+        <div className="bg-slate-900 text-white px-4 py-3 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs border border-slate-800 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold">
+              <Building2 className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-100">{currentTenant.name}</span>
+                <span className="bg-emerald-500/20 text-emerald-300 text-[10px] px-1.5 py-0.2 rounded border border-emerald-500/30 font-mono">
+                  {currentTenant.licenseNumber}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  TIN: {currentTenant.tinNumber}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                {language === 'am' ? 'የዚህ ፋርማሲ የመድሃኒቶችና እቃዎች ካታሎግ' : 'Formulary & Item Master Catalog configured for this pharmacy tenant'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-[11px]">
+            <span className="text-slate-400">{currentTenant.city}, {currentTenant.subCity || 'Main'}</span>
+            <span className="text-slate-600">•</span>
+            <span className="text-emerald-400 font-semibold">{filteredProducts.length} items registered</span>
+          </div>
+        </div>
+      )}
+
       {/* Privacy Notice Banner for Cashier */}
       {isCashier && (
         <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-2.5 rounded-xl flex items-center gap-3 text-xs shadow-2xs">
