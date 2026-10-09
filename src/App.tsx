@@ -39,8 +39,10 @@ import { LandingPageView } from './components/LandingPageView';
 import { ArchitectureViewer } from './components/ArchitectureViewer';
 import { SuperAdminModal } from './components/SuperAdminModal';
 import { ProductModal } from './components/ProductModal';
+import { AccessDeniedView } from './components/AccessDeniedView';
 import { translations } from './utils/translations';
 import { createAuditLog } from './utils/auditLogger';
+import { runStockEngineTests } from './utils/stockEngine';
 
 export default function App() {
   // SaaS Public Portal View vs. Authenticated Pharmacy Operational Workspace
@@ -181,6 +183,27 @@ export default function App() {
   const [authInitialMode, setAuthInitialMode] = useState<AuthMode>('LOGIN');
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [productToEdit, setProductToEdit] = useState<Product | null>(null);
+
+  // Live computed test runner summary for sidebar badges and test banner
+  const [testsSummary, setTestsSummary] = useState<{ passed: number; total: number; failed: number } | undefined>(undefined);
+
+  useEffect(() => {
+    const results = runStockEngineTests(products, batches, stockBalances, categories);
+    const passed = results.filter((t) => t.passed).length;
+    const total = results.length;
+    const failed = total - passed;
+    setTestsSummary({ passed, total, failed });
+  }, [products, batches, stockBalances, categories]);
+
+  // Tenant switch helper: sets tenant, switches active branch/dispensary to that tenant
+  const handleSelectTenant = (ten: Tenant) => {
+    setCurrentTenant(ten);
+    const tenantLocs = locations.filter((l) => l.tenantId === ten.id);
+    if (tenantLocs.length > 0) {
+      const defLoc = tenantLocs.find((l) => l.isDefault) || tenantLocs[0];
+      setCurrentLocation(defLoc);
+    }
+  };
 
   // Sync to localStorage
   useEffect(() => {
@@ -380,12 +403,54 @@ export default function App() {
       defaultLanguage: 'am',
     };
 
+    const adminRoleId = `r-${newTenantId}-admin`;
+    const tenantRoles: Role[] = [
+      {
+        id: adminRoleId,
+        tenantId: newTenantId,
+        name: 'Pharmacy Administrator',
+        code: 'ADMIN',
+        description: `Full administrative access for ${newTenant.name}.`,
+        isSystem: true,
+        permissions: [
+          'tenants:manage', 'users:read', 'users:write', 'roles:manage',
+          'locations:read', 'locations:write', 'products:read', 'products:write', 'products:delete',
+          'master_data:manage', 'stock:read', 'stock:write', 'stock:adjust', 'stock:transfer',
+          'cost:view', 'pos:access', 'sales:discount', 'sales:return', 'customers:credit',
+          'reports:inventory', 'reports:sales', 'audit:view'
+        ],
+      },
+      {
+        id: `r-${newTenantId}-inv`,
+        tenantId: newTenantId,
+        name: 'Inventory Manager',
+        code: 'INVENTORY_MANAGER',
+        description: `Stock management & GRN intake for ${newTenant.name}.`,
+        isSystem: true,
+        permissions: [
+          'locations:read', 'products:read', 'products:write', 'master_data:manage',
+          'stock:read', 'stock:write', 'stock:adjust', 'stock:transfer', 'cost:view',
+          'reports:inventory'
+        ],
+      },
+      {
+        id: `r-${newTenantId}-cashier`,
+        tenantId: newTenantId,
+        name: 'Cashier / Dispensing Pharmacist',
+        code: 'CASHIER_PHARMACIST',
+        description: `POS retail counter access for ${newTenant.name}.`,
+        isSystem: true,
+        permissions: ['products:read', 'stock:read', 'pos:access'],
+      },
+    ];
+    setRoles((prev) => [...prev, ...tenantRoles]);
+
     const newUserId = `u-${Date.now()}`;
     const newUser: User = {
       ...adminUserData,
       id: newUserId,
       tenantId: newTenantId,
-      roleId: 'r-admin',
+      roleId: adminRoleId,
       isActive: true,
       isPlatformAdmin: false,
       createdAt: new Date().toISOString(),
@@ -529,8 +594,8 @@ export default function App() {
     const targetTenant = tenants.find((t) => t.id === tenantId);
     if (!targetTenant) return false;
 
-    // Validate 6-digit activation code
-    const isValid = !targetTenant.activationCode || targetTenant.activationCode === activationCode.trim() || activationCode.trim().length === 6;
+    // Strict 6-digit activation code verification against issued tenant record
+    const isValid = Boolean(targetTenant.activationCode && targetTenant.activationCode === activationCode.trim());
     if (!isValid) return false;
 
     setTenants((prev) =>
@@ -646,29 +711,55 @@ export default function App() {
       const gen = generics.find((g) => g.id === (prodData.genericId || productToEdit.genericId));
       const genName = gen ? ` (${gen.name})` : '';
 
+      // Calculate real field diffs
+      const diffOld: Record<string, any> = {};
+      const diffNew: Record<string, any> = {};
+      const fieldsToCheck: (keyof Product)[] = [
+        'brandName', 'standardSellingPrice', 'isControlled', 'prescriptionRequired',
+        'isVatExempt', 'efdaRegistrationNo', 'dosageForm', 'strength', 'packSize',
+        'baseUnit', 'secondaryUnit', 'secondaryRatio', 'tertiaryUnit', 'tertiaryRatio',
+        'reorderLevel', 'reorderQuantity'
+      ];
+
+      fieldsToCheck.forEach((key) => {
+        if (prodData[key] !== undefined && prodData[key] !== productToEdit[key]) {
+          diffOld[key] = productToEdit[key];
+          diffNew[key] = prodData[key];
+        }
+      });
+
+      const priceChanged = diffOld.standardSellingPrice !== undefined;
+      const isControlledChanged = diffOld.isControlled !== undefined;
+
+      const action = priceChanged
+        ? 'PRICE_UPDATE'
+        : isControlledChanged
+        ? 'REGULATORY_SCHEDULE_UPDATE'
+        : 'PRODUCT_UPDATE';
+
+      const reason = priceChanged
+        ? `Product price updated from ${diffOld.standardSellingPrice ?? 'N/A'} ETB to ${diffNew.standardSellingPrice} ETB.`
+        : isControlledChanged
+        ? `Narcotic / Controlled substance schedule updated for EFDA compliance.`
+        : `Product catalog record updated: changed [${Object.keys(diffNew).join(', ')}].`;
+
       handleAddAuditLog(
         createAuditLog({
           tenantId: currentTenant.id,
-          userName: currentRole === 'ADMIN' ? 'Abinet Tesfaye' : 'Responsible Pharmacist',
+          userName: currentUser?.fullName || (currentRole === 'ADMIN' ? 'Abinet Tesfaye' : 'Responsible Pharmacist'),
           userRole: currentRole.replace('_', ' '),
-          action: 'PRICE_UPDATE',
+          action,
           entity: 'Product',
           entityId: productToEdit.id,
           entityName: `${prodData.brandName || productToEdit.brandName}${genName}`,
-          category: 'PRICE_MASTER',
+          category: priceChanged ? 'PRICE_MASTER' : isControlledChanged ? 'CONTROLLED_DRUGS' : 'COMPLIANCE',
           severity: 'INFO',
           locationId: currentLocation.id,
           locationName: currentLocation.name,
-          efdaComplianceCode: 'EFDA-PRICE-NOTIFY-03',
-          reason: `Updated product pricing or regulatory classification. Selling price: ${prodData.standardSellingPrice || productToEdit.standardSellingPrice} ETB.`,
-          oldValues: {
-            price: productToEdit.standardSellingPrice,
-            isControlled: productToEdit.isControlled,
-          },
-          newValues: {
-            price: prodData.standardSellingPrice,
-            isControlled: prodData.isControlled,
-          },
+          efdaComplianceCode: priceChanged ? 'EFDA-PRICE-NOTIFY-03' : 'EFDA-MED-CATALOG-01',
+          reason,
+          oldValues: diffOld,
+          newValues: diffNew,
         })
       );
     } else {
@@ -775,7 +866,7 @@ export default function App() {
       <Header
         tenants={tenants}
         currentTenant={currentTenant}
-        onSelectTenant={(ten) => setCurrentTenant(ten)}
+        onSelectTenant={handleSelectTenant}
         onOpenSuperAdmin={() => setIsSuperAdminOpen(true)}
         locations={locations}
         currentLocation={currentLocation}
@@ -822,6 +913,7 @@ export default function App() {
             auditLogsCount: auditLogs.length,
             tenantsCount: tenants.length,
             staffCount: users.filter((u) => u.tenantId === currentTenant.id && !u.isPlatformAdmin).length,
+            testsSummary,
           }}
         />
 
@@ -867,19 +959,30 @@ export default function App() {
             )}
 
             {activeTab === 'STAFF' && (
-              <ShopStaffManagementView
-                users={users}
-                setUsers={setUsers}
-                currentTenant={currentTenant}
-                locations={locations}
-                currentRole={currentRole}
-                language={language}
-                onAddAuditLog={handleAddAuditLog}
-              />
+              currentRole === 'ADMIN' || currentUser?.isPlatformAdmin ? (
+                <ShopStaffManagementView
+                  users={users}
+                  setUsers={setUsers}
+                  currentTenant={currentTenant}
+                  locations={locations}
+                  currentRole={currentRole}
+                  language={language}
+                  onAddAuditLog={handleAddAuditLog}
+                />
+              ) : (
+                <AccessDeniedView
+                  currentRole={currentRole}
+                  requiredRole="Shop Administrator"
+                  featureName="Staff & Roles Management"
+                  onGoBack={() => setActiveTab('POS')}
+                  language={language}
+                />
+              )
             )}
 
         {activeTab === 'POS' && (
           <POSView
+            key={currentTenant.id}
             products={products}
             batches={batches}
             stockBalances={stockBalances}
@@ -962,6 +1065,7 @@ export default function App() {
         {activeTab === 'PRODUCTS' && (
           <ProductsRegisterView
             products={products}
+            setProducts={setProducts}
             categories={categories}
             generics={generics}
             manufacturers={manufacturers}
@@ -977,6 +1081,7 @@ export default function App() {
             language={language}
             currentTenant={currentTenant}
             tenants={tenants}
+            currentTenantId={currentTenant.id}
           />
         )}
 
@@ -1008,22 +1113,26 @@ export default function App() {
         )}
 
         {activeTab === 'SAAS_ADMIN' && (
-          <SaasAdminView
-            tenants={tenants}
-            users={users}
-            currentTenant={currentTenant}
-            onSelectTenant={(t) => {
-              setCurrentTenant(t);
-              const tLocs = locations.filter((l) => l.tenantId === t.id);
-              if (tLocs.length > 0) {
-                setCurrentLocation(tLocs.find((l) => l.isDefault) || tLocs[0]);
-              }
-            }}
-            onUpdateTenantStatus={handleUpdateTenantStatus}
-            onUpdateTenantPlan={handleUpdateTenantPlan}
-            onAddTenant={handleAddTenant}
-            language={language}
-          />
+          currentUser?.isPlatformAdmin ? (
+            <SaasAdminView
+              tenants={tenants}
+              users={users}
+              currentTenant={currentTenant}
+              onSelectTenant={handleSelectTenant}
+              onUpdateTenantStatus={handleUpdateTenantStatus}
+              onUpdateTenantPlan={handleUpdateTenantPlan}
+              onAddTenant={handleAddTenant}
+              language={language}
+            />
+          ) : (
+            <AccessDeniedView
+              currentRole={currentRole}
+              requiredRole="SaaS Platform Super Administrator"
+              featureName="SaaS Platform Multi-Tenant Portal"
+              onGoBack={() => setActiveTab('POS')}
+              language={language}
+            />
+          )
         )}
 
         {activeTab === 'LOCATIONS' && (
@@ -1040,24 +1149,44 @@ export default function App() {
         )}
 
         {activeTab === 'ROLES' && (
-          <RolesPermissionsView
-            roles={roles}
-            activeRole={currentRole}
-            onSelectRole={(r) => setCurrentRole(r)}
-            language={language}
-          />
+          currentRole === 'ADMIN' || currentUser?.isPlatformAdmin ? (
+            <RolesPermissionsView
+              roles={roles}
+              activeRole={currentRole}
+              onSelectRole={(r) => setCurrentRole(r)}
+              language={language}
+            />
+          ) : (
+            <AccessDeniedView
+              currentRole={currentRole}
+              requiredRole="Shop Administrator"
+              featureName="Roles & Permissions Configuration"
+              onGoBack={() => setActiveTab('POS')}
+              language={language}
+            />
+          )
         )}
 
         {activeTab === 'AUDIT_LOGS' && (
-          <AuditLogView
-            auditLogs={auditLogs}
-            setAuditLogs={setAuditLogs}
-            currentTenant={currentTenant}
-            currentLocation={currentLocation}
-            locations={locations}
-            currentRole={currentRole}
-            language={language}
-          />
+          currentRole !== 'CASHIER_PHARMACIST' || currentUser?.isPlatformAdmin ? (
+            <AuditLogView
+              auditLogs={auditLogs}
+              setAuditLogs={setAuditLogs}
+              currentTenant={currentTenant}
+              currentLocation={currentLocation}
+              locations={locations}
+              currentRole={currentRole}
+              language={language}
+            />
+          ) : (
+            <AccessDeniedView
+              currentRole={currentRole}
+              requiredRole="Inventory Manager or Administrator"
+              featureName="EFDA Regulatory Audit Trail"
+              onGoBack={() => setActiveTab('POS')}
+              language={language}
+            />
+          )
         )}
 
         {activeTab === 'TESTS' && (
@@ -1066,6 +1195,7 @@ export default function App() {
             batches={batches}
             balances={stockBalances}
             categories={categories}
+            onResultsUpdate={setTestsSummary}
           />
         )}
 

@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Search, ShoppingCart, Tag, Pill, ShieldAlert,
   ArrowRightLeft, CheckCircle2, AlertTriangle, Trash2,
   Clock, CreditCard, Banknote, QrCode, PauseCircle,
   PlayCircle, Printer, X, Sparkles, User, Smartphone,
-  Plus, Minus, RefreshCw, Layers, FileText, Check, ChevronRight
+  Plus, Minus, RefreshCw, Layers, FileText, Check, ChevronRight,
+  RotateCcw, Lock, Undo2
 } from 'lucide-react';
 import {
   Product, Batch, StockBalance, Generic, Location,
@@ -13,6 +14,7 @@ import {
 } from '../types/pharmacy';
 import { allocateBatchesFefo, sanitizePriceForRole } from '../utils/stockEngine';
 import { formatDualDate, formatEthiopianDate } from '../utils/ethiopianCalendar';
+import { DualDate } from './DualDate';
 import { createAuditLog } from '../utils/auditLogger';
 
 interface POSViewProps {
@@ -62,9 +64,40 @@ export const POSView: React.FC<POSViewProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [cartItems, setCartItems] = useState<SalesItem[]>([]);
-  const [heldBills, setHeldBills] = useState<HeldBill[]>([]);
+
+  // Persist held bills in localStorage
+  const [heldBills, setHeldBills] = useState<HeldBill[]>(() => {
+    try {
+      const saved = localStorage.getItem(`tenapharm_held_bills_${currentTenantId}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`tenapharm_held_bills_${currentTenantId}`, JSON.stringify(heldBills));
+    } catch {
+      // ignore
+    }
+  }, [heldBills, currentTenantId]);
+
   const [showHeldBillsModal, setShowHeldBillsModal] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+
+  // Sales Return / Refund Flow State
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnInvoiceQuery, setReturnInvoiceQuery] = useState('');
+  const [selectedInvoiceForReturn, setSelectedInvoiceForReturn] = useState<SalesInvoice | null>(null);
+  const [returnReason, setReturnReason] = useState<'DAMAGED_EXPIRED' | 'ADVERSE_REACTION' | 'WRONG_ITEM' | 'PRESCRIBER_CHANGE' | 'PATIENT_CANCEL'>('WRONG_ITEM');
+  const [returnNotes, setReturnNotes] = useState('');
+  const [returnQuantities, setReturnQuantities] = useState<Record<string, number>>({});
+
+  // Credit Limit & Sales Manager Approval Override State
+  const [isManagerApproved, setIsManagerApproved] = useState(false);
+  const [managerApprovalPin, setManagerApprovalPin] = useState('');
+  const [managerPinError, setManagerPinError] = useState<string | null>(null);
 
   // Shortage & Transfer Alert state
   const [shortageNotice, setShortageNotice] = useState<{
@@ -107,6 +140,16 @@ export const POSView: React.FC<POSViewProps> = ({
     { method: 'CASH', amount: 0 },
   ]);
 
+  // Inline error and success notifications (replacing all alerts)
+  const [inlineError, setInlineError] = useState<string | null>(null);
+  const [inlineSuccess, setInlineSuccess] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Autofocus search on mount
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
   // Target locations (Purchases go to Store; POS dispenses strictly from Dispensary)
   const dispLoc = locations.find((l) => l.type === 'DISPENSARY') || locations[0];
   const storeLoc = locations.find((l) => l.type === 'STORE') || locations[0];
@@ -134,6 +177,94 @@ export const POSView: React.FC<POSViewProps> = ({
   // Split payment totals
   const totalSplitsEntered = splitPayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
   const splitRemainingDue = Math.max(0, grandTotal - totalSplitsEntered);
+
+  // Cart quantity stepper handler
+  const handleUpdateCartItemQty = (itemIndex: number, delta: number) => {
+    setInlineError(null);
+    setCartItems((prev) => {
+      const item = prev[itemIndex];
+      if (!item) return prev;
+      const newQty = item.quantityInUnit + delta;
+      if (newQty <= 0) {
+        return prev.filter((_, i) => i !== itemIndex);
+      }
+      const prod = products.find((p) => p.id === item.productId);
+      let multiplier = 1;
+      if (item.unitType === 'SECONDARY' && prod?.secondaryRatio) multiplier = prod.secondaryRatio;
+      if (item.unitType === 'TERTIARY' && prod?.tertiaryRatio) multiplier = prod.tertiaryRatio;
+      const newBaseQty = newQty * multiplier;
+
+      // Validate dispensary stock
+      const dispStock = stockBalances
+        .filter((b) => b.locationId === dispLoc.id && b.productId === item.productId && b.quantity > 0)
+        .reduce((sum, b) => sum + b.quantity, 0);
+
+      if (newBaseQty > dispStock) {
+        setInlineError(`Cannot increase: Only ${dispStock} ${prod?.baseUnit || 'units'} available in Dispensary.`);
+        return prev;
+      }
+
+      const updated = [...prev];
+      updated[itemIndex] = {
+        ...item,
+        quantityInUnit: newQty,
+        quantityInBase: newBaseQty,
+        totalPrice: newQty * item.unitPrice,
+      };
+      return updated;
+    });
+  };
+
+  // Barcode and search Enter key keyboard navigation
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      setInlineError(null);
+      const q = searchQuery.trim().toLowerCase();
+
+      // If search query is empty and cart has items, Enter opens Pay/Checkout modal!
+      if (!q) {
+        if (cartItems.length > 0) {
+          setCashTendered(grandTotal);
+          setSplitPayments([{ method: 'CASH', amount: grandTotal }]);
+          setShowCheckoutModal(true);
+        }
+        return;
+      }
+
+      // 1. Exact barcode match
+      const exactBarcode = products.find((p) => p.barcode && p.barcode.toLowerCase() === q);
+      if (exactBarcode) {
+        handleAddToCart(exactBarcode, 'BASE');
+        setSearchQuery('');
+        return;
+      }
+
+      // 2. Exact brand name match
+      const exactBrand = products.find((p) => p.brandName.toLowerCase() === q);
+      if (exactBrand) {
+        handleAddToCart(exactBrand, 'BASE');
+        setSearchQuery('');
+        return;
+      }
+
+      // 3. Single search match
+      if (searchResults.length === 1) {
+        handleAddToCart(searchResults[0], 'BASE');
+        setSearchQuery('');
+        return;
+      }
+
+      // 4. First match if multiple found
+      if (searchResults.length > 1) {
+        handleAddToCart(searchResults[0], 'BASE');
+        setSearchQuery('');
+        return;
+      }
+
+      setInlineError(`No product found for scanned barcode or search term "${searchQuery}".`);
+    }
+  };
 
   // ------------------------------------------------------------------
   // Add Product to Cart with FEFO Auto-Allocation
@@ -171,7 +302,7 @@ export const POSView: React.FC<POSViewProps> = ({
     const fefo = allocateBatchesFefo(product.id, dispLoc.id, baseQtyNeeded, batches, stockBalances, now);
 
     if (!fefo.success || fefo.allocations.length === 0) {
-      alert(`Cannot dispense: ${fefo.message}`);
+      setInlineError(`Cannot dispense: ${fefo.message}`);
       return;
     }
 
@@ -206,7 +337,7 @@ export const POSView: React.FC<POSViewProps> = ({
     );
 
     if (!storeBalance) {
-      alert('Insufficient bulk stock in Store warehouse.');
+      setInlineError('Insufficient bulk stock in Store warehouse.');
       return;
     }
 
@@ -354,7 +485,7 @@ export const POSView: React.FC<POSViewProps> = ({
 
     if (isSplitPaymentMode) {
       if (totalSplitsEntered < grandTotal) {
-        alert(`Split payments total (${totalSplitsEntered.toFixed(2)} ETB) is less than Grand Total (${grandTotal.toFixed(2)} ETB).`);
+        setInlineError(`Split payments total (${totalSplitsEntered.toFixed(2)} ETB) is less than Grand Total (${grandTotal.toFixed(2)} ETB).`);
         return;
       }
       finalPayments = splitPayments.filter((p) => p.amount > 0).map((p) => ({
@@ -529,13 +660,50 @@ export const POSView: React.FC<POSViewProps> = ({
         <div className="relative">
           <Search className="w-5 h-5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
+            ref={searchInputRef}
+            autoFocus
             type="text"
-            placeholder={language === 'am' ? 'ባርኮድ፣ የመድሃኒት ስም ወይም የሳይንሳዊ ስም (INN) ፈልግ...' : 'Search barcode, brand name, or INN generic active ingredient...'}
+            placeholder={language === 'am' ? 'ባርኮድ፣ የመድሃኒት ስም ወይም የሳይንሳዊ ስም (INN) ፈልግ (Enter ለመጨመር)...' : 'Scan barcode or search brand / INN (Press Enter to add)...'}
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setInlineError(null);
+            }}
+            onKeyDown={handleSearchKeyDown}
             className="w-full pl-11 pr-4 py-3 rounded-xl border border-slate-300 bg-white text-sm shadow-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
           />
         </div>
+
+        {/* Inline Error and Success Banners */}
+        {inlineError && (
+          <div className="bg-rose-50 border border-rose-300 text-rose-900 p-3 rounded-xl text-xs flex items-center justify-between gap-2 shadow-2xs animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span className="font-semibold">{inlineError}</span>
+            </div>
+            <button
+              onClick={() => setInlineError(null)}
+              className="text-rose-500 hover:text-rose-800 font-bold p-1 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {inlineSuccess && (
+          <div className="bg-emerald-50 border border-emerald-300 text-emerald-900 p-3 rounded-xl text-xs flex items-center justify-between gap-2 shadow-2xs animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="font-semibold">{inlineSuccess}</span>
+            </div>
+            <button
+              onClick={() => setInlineSuccess(null)}
+              className="text-emerald-500 hover:text-emerald-800 font-bold p-1 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Shortage & Transfer Prompt Banner */}
         {shortageNotice && (
@@ -630,8 +798,10 @@ export const POSView: React.FC<POSViewProps> = ({
                   className="p-3.5 hover:bg-slate-50/90 transition-colors flex flex-wrap items-center justify-between gap-3 text-xs"
                 >
                   <div className="flex-1 min-w-[240px]">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-slate-900 text-sm">{prod.brandName}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-slate-900 text-sm">
+                        {prod.brandName} {prod.strength ? `(${prod.strength})` : ''}
+                      </span>
                       {prod.isControlled && (
                         <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-rose-100 text-rose-800 border border-rose-300">
                           Controlled Rx
@@ -644,19 +814,28 @@ export const POSView: React.FC<POSViewProps> = ({
                       )}
                     </div>
 
-                    <div className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-2">
+                    <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap items-center gap-2">
                       {gen && <span className="font-medium text-slate-700">INN: {gen.name}</span>}
                       <span>• {prod.dosageForm}</span>
                       <span>• Pack: {prod.packSize || 'Standard'}</span>
                     </div>
 
-                    {/* Stock level indicators */}
-                    <div className="mt-1 flex items-center gap-3 text-[11px]">
+                    {/* Stock, FEFO Expiry (EC+GC), and Price */}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2.5 text-[11px]">
                       <span className={`font-semibold ${dispStock > 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
-                        Dispensary Shelf: <strong>{dispStock}</strong> {prod.baseUnit}s
+                        Dispensary: <strong>{dispStock}</strong> {prod.baseUnit}s
                       </span>
-                      <span className="text-slate-500">
-                        Store Warehouse: <strong>{storeStock}</strong> {prod.baseUnit}s
+                      {earliestBatch ? (
+                        <span className="font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px] inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-emerald-600 shrink-0" />
+                          <span>FEFO:</span>
+                          <DualDate value={earliestBatch.expiryDate} lang={language} />
+                        </span>
+                      ) : (
+                        <span className="text-rose-600 font-semibold text-[10px]">No active batch</span>
+                      )}
+                      <span className="font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                        {(earliestBatch ? Number(earliestBatch.sellingPrice) : (prod.standardSellingPrice || 0)).toFixed(2)} ETB / {prod.baseUnit}
                       </span>
                     </div>
                   </div>
@@ -700,10 +879,10 @@ export const POSView: React.FC<POSViewProps> = ({
       </div>
 
       {/* RIGHT COLUMN: Active Cart, Customer Credit, Hold Bill & Checkout */}
-      <div className="lg:col-span-5 space-y-4">
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4 text-xs">
+      <div className="lg:col-span-5">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 text-xs flex flex-col max-h-[calc(100vh-110px)] overflow-hidden">
           {/* Cart Header */}
-          <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+          <div className="flex items-center justify-between pb-2.5 border-b border-slate-200 shrink-0">
             <div className="flex items-center gap-2">
               <ShoppingCart className="w-5 h-5 text-emerald-600" />
               <h3 className="font-bold text-sm text-slate-900">Current Sales Cart</h3>
@@ -724,15 +903,15 @@ export const POSView: React.FC<POSViewProps> = ({
 
           {/* Cart Items List */}
           {cartItems.length === 0 ? (
-            <div className="py-12 text-center text-slate-400 space-y-2">
-              <ShoppingCart className="w-10 h-10 text-slate-300 mx-auto" />
+            <div className="py-10 text-center text-slate-400 space-y-2 flex-1 flex flex-col justify-center">
+              <ShoppingCart className="w-9 h-9 text-slate-300 mx-auto" />
               <div className="font-semibold text-slate-700">The cart is currently empty</div>
               <p className="text-[11px] text-slate-400 max-w-xs mx-auto">
-                Search or select medicines on the left. The FEFO engine will automatically allocate the earliest expiring batches from active dispensary stock.
+                Scan barcode or select medicines on the left. Earliest expiring batches are automatically allocated via FEFO.
               </p>
             </div>
           ) : (
-            <div className="space-y-3 max-h-[360px] overflow-y-auto divide-y divide-slate-100 pr-1">
+            <div className="space-y-3 flex-1 overflow-y-auto max-h-[280px] divide-y divide-slate-100 pr-1 py-1">
               {cartItems.map((item, idx) => {
                 const prod = products.find((p) => p.id === item.productId);
                 const expiryDiff = Math.ceil(
@@ -743,17 +922,19 @@ export const POSView: React.FC<POSViewProps> = ({
                   <div key={item.id} className="pt-3 first:pt-0 flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="font-bold text-slate-900 text-xs truncate">
-                        {prod?.brandName}
+                        {prod?.brandName} {prod?.strength ? `(${prod.strength})` : ''}
                       </div>
 
                       <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px]">
                         <span className="font-mono bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200 font-bold text-slate-800">
                           Batch: {item.batchNumber}
                         </span>
-                        <span className={`px-1.5 py-0.2 rounded font-semibold ${
+                        <span className={`px-1.5 py-0.2 rounded font-semibold inline-flex items-center gap-1 ${
                           expiryDiff <= 30 ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-800'
                         }`}>
-                          Exp: {item.expiryDate} ({expiryDiff}d left)
+                          <span>Exp:</span>
+                          <DualDate value={item.expiryDate} lang={language} />
+                          <span>({expiryDiff}d left)</span>
                         </span>
                         {item.isControlled && (
                           <span className="font-bold text-rose-700 bg-rose-50 px-1 rounded">
@@ -762,9 +943,31 @@ export const POSView: React.FC<POSViewProps> = ({
                         )}
                       </div>
 
-                      <div className="text-[11px] text-slate-600 mt-1 flex items-center gap-2">
-                        <span>
-                          {item.quantityInUnit} {item.unitType.toLowerCase()} ({item.quantityInBase} base units)
+                      {/* Quantity Stepper and Unit Price */}
+                      <div className="text-[11px] text-slate-600 mt-2 flex items-center gap-2">
+                        <div className="flex items-center gap-1 border border-slate-300 rounded-lg p-0.5 bg-slate-50">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateCartItemQty(idx, -1)}
+                            className="w-5 h-5 flex items-center justify-center rounded bg-white hover:bg-slate-200 text-slate-800 font-bold border border-slate-200 cursor-pointer text-xs"
+                            title="Decrease quantity"
+                          >
+                            -
+                          </button>
+                          <span className="font-bold text-xs px-1 min-w-[20px] text-center text-slate-900">
+                            {item.quantityInUnit}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateCartItemQty(idx, 1)}
+                            className="w-5 h-5 flex items-center justify-center rounded bg-white hover:bg-slate-200 text-slate-800 font-bold border border-slate-200 cursor-pointer text-xs"
+                            title="Increase quantity"
+                          >
+                            +
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          {item.unitType.toLowerCase()} ({item.quantityInBase} base units)
                         </span>
                         <span>@ {item.unitPrice.toFixed(2)} ETB</span>
                       </div>
@@ -788,70 +991,73 @@ export const POSView: React.FC<POSViewProps> = ({
             </div>
           )}
 
-          {/* Customer Selection for Credit Account & Prescription */}
-          <div className="pt-3 border-t border-slate-200">
-            <label className="text-slate-700 text-xs font-semibold block mb-1">
-              Select Customer / Credit Account (Optional)
-            </label>
-            <select
-              aria-label="Select Customer"
-              value={selectedCustomer?.id || ''}
-              onChange={(e) => {
-                const cust = customers.find((c) => c.id === e.target.value);
-                setSelectedCustomer(cust || null);
-              }}
-              className="w-full px-3 py-1.5 rounded-lg border border-slate-200 text-xs bg-white text-slate-800 font-medium"
-            >
-              <option value="">Walk-in Retail Patient</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.fullName} (Debt: {c.currentDebt.toFixed(2)} / Limit: {c.creditLimit.toFixed(2)} ETB)
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Bill Summary Breakdown */}
-          <div className="pt-3 border-t border-slate-200 space-y-1.5 text-xs text-slate-600">
-            <div className="flex justify-between">
-              <span>Subtotal:</span>
-              <span className="font-medium text-slate-800">{subtotal.toFixed(2)} ETB</span>
+          {/* Sticky Cart Footer: Customer Selection, Bill Breakdown & Pay Button */}
+          <div className="shrink-0 sticky bottom-0 bg-white border-t border-slate-200 pt-3 space-y-2 mt-auto">
+            {/* Customer Selection for Credit Account & Prescription */}
+            <div>
+              <label className="text-slate-700 text-xs font-semibold block mb-1">
+                Select Customer / Credit Account (Optional)
+              </label>
+              <select
+                aria-label="Select Customer"
+                value={selectedCustomer?.id || ''}
+                onChange={(e) => {
+                  const cust = customers.find((c) => c.id === e.target.value);
+                  setSelectedCustomer(cust || null);
+                }}
+                className="w-full px-2.5 py-1 rounded-lg border border-slate-200 text-xs bg-white text-slate-800 font-medium"
+              >
+                <option value="">Walk-in Retail Patient</option>
+                {customers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.fullName} (Debt: {c.currentDebt.toFixed(2)} / Limit: {c.creditLimit.toFixed(2)} ETB)
+                  </option>
+                ))}
+              </select>
             </div>
-            <div className="flex justify-between text-emerald-700">
-              <span>VAT (Essential Drugs Exempt):</span>
-              <span>0.00 ETB</span>
-            </div>
-            <div className="flex justify-between font-bold text-base text-slate-900 pt-2 border-t border-slate-200">
-              <span>Total Payable:</span>
-              <span className="text-emerald-700">{grandTotal.toFixed(2)} ETB</span>
-            </div>
-          </div>
 
-          {/* Checkout & Hold Action Buttons */}
-          <div className="grid grid-cols-2 gap-2 pt-2">
-            <button
-              onClick={handleHoldBill}
-              disabled={cartItems.length === 0}
-              className="py-2.5 px-3 rounded-xl border border-slate-300 font-semibold text-xs text-slate-700 hover:bg-slate-100 flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
-            >
-              <PauseCircle className="w-4 h-4 text-slate-500" />
-              <span>Hold Bill</span>
-            </button>
+            {/* Bill Summary Breakdown */}
+            <div className="space-y-1 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+              <div className="flex justify-between">
+                <span>Subtotal:</span>
+                <span className="font-medium text-slate-800">{subtotal.toFixed(2)} ETB</span>
+              </div>
+              <div className="flex justify-between text-emerald-700 text-[11px]">
+                <span>VAT (EFDA Essential Drugs Exempt):</span>
+                <span>0.00 ETB</span>
+              </div>
+              <div className="flex justify-between font-bold text-sm text-slate-900 pt-1.5 border-t border-slate-200">
+                <span>Total Payable:</span>
+                <span className="text-emerald-700 font-extrabold text-base">{grandTotal.toFixed(2)} ETB</span>
+              </div>
+            </div>
 
-            <button
-              onClick={() => {
-                setCashTendered(grandTotal);
-                setSplitPayments([
-                  { method: 'CASH', amount: grandTotal },
-                ]);
-                setShowCheckoutModal(true);
-              }}
-              disabled={cartItems.length === 0}
-              className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors disabled:opacity-40 cursor-pointer"
-            >
-              <Banknote className="w-4 h-4" />
-              <span>Checkout ({grandTotal.toFixed(2)} ETB)</span>
-            </button>
+            {/* Checkout & Hold Action Buttons */}
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                onClick={handleHoldBill}
+                disabled={cartItems.length === 0}
+                className="py-2.5 px-3 rounded-xl border border-slate-300 font-semibold text-xs text-slate-700 hover:bg-slate-100 flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+              >
+                <PauseCircle className="w-4 h-4 text-slate-500" />
+                <span>Hold Bill</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setCashTendered(grandTotal);
+                  setSplitPayments([
+                    { method: 'CASH', amount: grandTotal },
+                  ]);
+                  setShowCheckoutModal(true);
+                }}
+                disabled={cartItems.length === 0}
+                className="py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors disabled:opacity-40 cursor-pointer"
+              >
+                <Banknote className="w-4 h-4" />
+                <span>Pay ({grandTotal.toFixed(2)} ETB)</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1428,7 +1634,11 @@ export const POSView: React.FC<POSViewProps> = ({
                     <div key={idx} className="space-y-0.5">
                       <div className="font-bold">{prod?.brandName}</div>
                       <div className="flex justify-between text-slate-600 text-[10px]">
-                        <span>Batch: {it.batchNumber} (Exp: {it.expiryDate})</span>
+                        <span className="inline-flex items-center gap-1">
+                          <span>Batch: {it.batchNumber} (Exp:</span>
+                          <DualDate value={it.expiryDate} lang={language} />
+                          <span>)</span>
+                        </span>
                         <span>
                           {it.quantityInUnit} {it.unitType.toLowerCase()} @ {it.unitPrice.toFixed(2)}
                         </span>
@@ -1487,7 +1697,7 @@ export const POSView: React.FC<POSViewProps> = ({
               </button>
               <button
                 onClick={() => {
-                  alert('Thermal receipt dispatched to 80mm ESC/POS hardware printer.');
+                  setInlineSuccess('Thermal receipt dispatched to 80mm ESC/POS hardware printer.');
                   setShowReceiptModal(false);
                 }}
                 className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs flex items-center gap-1.5 cursor-pointer"

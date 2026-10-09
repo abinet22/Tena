@@ -3,7 +3,8 @@ import {
   ArrowRightLeft, Warehouse, Store, AlertTriangle,
   CheckCircle2, Clock, Plus, Trash2, ShieldAlert,
   Search, Filter, FileText, ArrowDownRight, Tag, Truck,
-  Building2, MapPin, Layers, History, ShoppingCart
+  Building2, MapPin, Layers, History, ShoppingCart,
+  MoreVertical, FileCheck, X
 } from 'lucide-react';
 import {
   StockBalance, Product, Batch, Location, TransferOrder,
@@ -13,6 +14,7 @@ import {
 import { sanitizePriceForRole, formatBaseQuantityInUnits } from '../utils/stockEngine';
 import { formatDualDate } from '../utils/ethiopianCalendar';
 import { createAuditLog } from '../utils/auditLogger';
+import { DualDate } from './DualDate';
 
 interface InventoryTransfersViewProps {
   stockBalances: StockBalance[];
@@ -81,6 +83,7 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
   const [writeOffReason, setWriteOffReason] = useState<'EXPIRED' | 'DAMAGED' | 'RECALLED_EFDA'>('EXPIRED');
   const [writeOffQty, setWriteOffQty] = useState<number>(10);
   const [writeOffCertRef, setWriteOffCertRef] = useState('EFDA-DISP-2026-09');
+  const [overflowMenuBalanceId, setOverflowMenuBalanceId] = useState<string | null>(null);
 
   const now = new Date();
 
@@ -133,7 +136,7 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
 
   const isInterBranch = activeSourceLoc && activeDestLoc && (activeSourceLoc.branchName !== activeDestLoc.branchName);
 
-  // Available batches in chosen Source Location
+  // Available batches in chosen Source Location (Expired batches strictly excluded from selection)
   const availableSourceBatches = useMemo(() => {
     if (!activeSourceLoc) return [];
     return stockBalances
@@ -143,8 +146,59 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
         const batch = batches.find((bat) => bat.id === b.batchId);
         return { balance: b, product: prod, batch };
       })
-      .filter((item) => !!item.product && !!item.batch);
-  }, [stockBalances, activeSourceLoc, products, batches]);
+      .filter((item) => {
+        if (!item.product || !item.batch) return false;
+        return new Date(item.batch.expiryDate).getTime() >= now.getTime();
+      });
+  }, [stockBalances, activeSourceLoc, products, batches, now]);
+
+  // Sorted Balances: Expired rows sort to the top, then <= 30d, then ascending expiry
+  const sortedBalances = useMemo(() => {
+    return [...filteredBalances].sort((a, b) => {
+      const batchA = batches.find((bat) => bat.id === a.batchId);
+      const batchB = batches.find((bat) => bat.id === b.batchId);
+      if (!batchA || !batchB) return 0;
+      const timeA = new Date(batchA.expiryDate).getTime();
+      const timeB = new Date(batchB.expiryDate).getTime();
+      const nowTime = now.getTime();
+      const isExpA = timeA < nowTime;
+      const isExpB = timeB < nowTime;
+      if (isExpA && !isExpB) return -1;
+      if (!isExpA && isExpB) return 1;
+      return timeA - timeB;
+    });
+  }, [filteredBalances, batches, now]);
+
+  // Dispensary Shortages Prompt: Items in Dispensary where quantity is below reorder level
+  const dispensaryShortages = useMemo(() => {
+    return stockBalances
+      .filter((b) => {
+        const loc = tenantLocations.find((l) => l.id === b.locationId);
+        if (!loc || loc.type !== 'DISPENSARY') return false;
+        const prod = products.find((p) => p.id === b.productId);
+        if (!prod) return false;
+        return b.quantity < (prod.reorderLevel || 50);
+      })
+      .map((b) => {
+        const prod = products.find((p) => p.id === b.productId)!;
+        const batch = batches.find((bat) => bat.id === b.batchId);
+        const loc = tenantLocations.find((l) => l.id === b.locationId)!;
+        // Find store batches with available stock for this product
+        const storeBalances = stockBalances.filter((sb) => {
+          const sLoc = tenantLocations.find((l) => l.id === sb.locationId);
+          return sLoc?.type === 'STORE' && sb.productId === prod.id && sb.quantity > 0;
+        });
+        const totalStoreStock = storeBalances.reduce((sum, sb) => sum + sb.quantity, 0);
+        return {
+          balance: b,
+          product: prod,
+          batch,
+          location: loc,
+          storeStock: totalStoreStock,
+          storeBalances,
+        };
+      });
+  }, [stockBalances, tenantLocations, products, batches]);
 
   // Execute Transfer (Intra-Branch or Inter-Branch)
   const handleExecuteTransfer = (e: React.FormEvent) => {
@@ -484,6 +538,78 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
       {/* BALANCES TAB */}
       {activeTab === 'BALANCES' && (
         <div className="space-y-4">
+          {/* Dispensary Shortage Alert & Transfer Requisitions Prompt */}
+          {dispensaryShortages.length > 0 && (
+            <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-4 shadow-2xs space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-amber-500 text-slate-950 rounded-lg font-bold">
+                    <AlertTriangle className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <h4 className="font-bold text-amber-950 text-xs">
+                      Dispensary Counter Shortage Alert ({dispensaryShortages.length} Product{dispensaryShortages.length === 1 ? '' : 's'} Below Threshold)
+                    </h4>
+                    <p className="text-[11px] text-amber-800">
+                      Dispensary stock is critically below reorder level. Requisition stock transfers from Central Store to prevent counter stock-outs.
+                    </p>
+                  </div>
+                </div>
+                <span className="text-[11px] font-mono bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded-full font-bold">
+                  Internal Transfer Engine Active
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
+                {dispensaryShortages.map((item) => {
+                  const needed = Math.max(50, (item.product.reorderLevel || 50) - item.balance.quantity);
+                  const storeHasStock = item.storeStock > 0;
+                  const firstStoreBatch = item.storeBalances[0]?.batchId || item.balance.batchId;
+
+                  return (
+                    <div
+                      key={item.balance.id}
+                      className="bg-white p-3 rounded-xl border border-amber-200/80 shadow-2xs flex flex-col justify-between gap-2 text-xs"
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-bold text-slate-900 truncate">{item.product.brandName}</span>
+                          <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-1.5 py-0.5 rounded">
+                            Shortage
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          Shelf: <strong className="text-rose-700">{item.balance.quantity}</strong> / {item.product.reorderLevel} {item.product.baseUnit}s
+                        </div>
+                        <div className="text-[11px] text-slate-600 mt-0.5">
+                          Store Warehouse: <strong className={storeHasStock ? 'text-emerald-700' : 'text-slate-500'}>
+                            {item.storeStock} {item.product.baseUnit}s
+                          </strong>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setDestLocationId(item.balance.locationId);
+                          setSourceLocationId(defaultStoreLoc?.id || '');
+                          setTransferBatchId(firstStoreBatch);
+                          setTransferQty(needed);
+                          setTransferNotes(`Replenishing shortage: ${item.product.brandName} in ${item.location.name} (${item.balance.quantity} < ${item.product.reorderLevel})`);
+                          setShowTransferModal(true);
+                        }}
+                        disabled={!storeHasStock}
+                        className="w-full py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-bold text-[11px] flex items-center justify-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
+                      >
+                        <ArrowRightLeft className="w-3.5 h-3.5" />
+                        <span>{storeHasStock ? `Transfer ${needed} from Store` : 'Zero Store Stock'}</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Filters Bar */}
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="relative flex-1 min-w-[240px]">
@@ -565,35 +691,73 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 uppercase text-[11px] font-semibold">
                 <tr>
+                  <th className="px-4 py-3">Batch & Expiry Date</th>
+                  <th className="px-4 py-3">Product Name & Strength</th>
                   <th className="px-4 py-3">Location</th>
-                  <th className="px-4 py-3">Product Name</th>
-                  <th className="px-4 py-3">Batch Number</th>
-                  <th className="px-4 py-3">Expiry Date</th>
                   <th className="px-4 py-3 text-right">Physical Balance</th>
                   <th className="px-4 py-3 text-right">Packaging Ratio</th>
                   <th className="px-4 py-3 text-right">Unit Sell Price</th>
-                  <th className="px-4 py-3 text-center">Status / Actions</th>
+                  <th className="px-4 py-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredBalances.length === 0 ? (
+                {sortedBalances.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
                       No stock balances matching current filters.
                     </td>
                   </tr>
                 ) : (
-                  filteredBalances.map((bal) => {
+                  sortedBalances.map((bal) => {
                     const prod = products.find((p) => p.id === bal.productId);
                     const batch = batches.find((b) => b.id === bal.batchId);
                     const loc = locations.find((l) => l.id === bal.locationId);
                     if (!prod || !batch) return null;
 
                     const expiryInfo = getExpiryStatus(batch.expiryDate);
+                    const expDate = new Date(batch.expiryDate);
+                    const diffDays = Math.floor((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                    const isExpired = diffDays < 0;
+                    const isNear30 = !isExpired && diffDays <= 30;
                     const isLow = bal.quantity < prod.reorderLevel;
 
+                    const rowBgClass = isExpired
+                      ? 'bg-rose-50/90 hover:bg-rose-100/90 border-l-4 border-l-rose-600'
+                      : isNear30
+                      ? 'bg-amber-50/80 hover:bg-amber-100/80 border-l-4 border-l-amber-500'
+                      : 'hover:bg-slate-50/80 border-l-4 border-l-transparent';
+
                     return (
-                      <tr key={bal.id} className="hover:bg-slate-50/80 transition-colors">
+                      <tr key={bal.id} className={`${rowBgClass} transition-colors`}>
+                        {/* 1. BATCH NUMBER & EXPIRY DATE (FIRST COLUMN) */}
+                        <td className="px-4 py-3">
+                          <div className="font-mono font-bold text-slate-900 text-xs">
+                            {batch.batchNumber}
+                          </div>
+                          <div className="text-[11px] text-slate-600 mt-0.5">
+                            <DualDate value={batch.expiryDate} lang={language} />
+                          </div>
+                          {isExpired && (
+                            <span className="inline-block mt-1 px-2 py-0.5 rounded font-extrabold text-[10px] bg-rose-600 text-white shadow-2xs">
+                              EXPIRED — DO NOT DISPENSE
+                            </span>
+                          )}
+                          {isNear30 && (
+                            <span className="inline-block mt-1 px-2 py-0.5 rounded font-bold text-[10px] bg-amber-200 text-amber-950 border border-amber-300">
+                              CRITICAL FEFO (&le; {diffDays} DAYS)
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 2. PRODUCT NAME & STRENGTH */}
+                        <td className="px-4 py-3">
+                          <div className="font-bold text-slate-900">{prod.brandName}</div>
+                          <div className="text-[11px] text-slate-500">
+                            {prod.strength || prod.packSize || prod.dosageForm}
+                          </div>
+                        </td>
+
+                        {/* 3. LOCATION */}
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-bold text-[10px] ${
@@ -606,18 +770,8 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                             {loc?.name || 'Location'}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="font-bold text-slate-900">{prod.brandName}</div>
-                          <div className="text-[11px] text-slate-500">{prod.packSize}</div>
-                        </td>
-                        <td className="px-4 py-3 font-mono font-bold text-slate-800">
-                          {batch.batchNumber}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${expiryInfo.color}`}>
-                            {batch.expiryDate} ({expiryInfo.label})
-                          </span>
-                        </td>
+
+                        {/* 4. PHYSICAL BALANCE */}
                         <td className="px-4 py-3 text-right">
                           <div className={`font-bold text-sm ${isLow ? 'text-rose-700' : 'text-slate-900'}`}>
                             {bal.quantity.toLocaleString()} {prod.baseUnit}s
@@ -628,27 +782,20 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                             </span>
                           )}
                         </td>
+
+                        {/* 5. PACKAGING RATIO */}
                         <td className="px-4 py-3 text-right text-[11px] text-slate-600 font-mono">
                           {formatBaseQuantityInUnits(prod, bal.quantity)}
                         </td>
+
+                        {/* 6. UNIT SELL PRICE */}
                         <td className="px-4 py-3 text-right font-bold text-slate-900">
                           {Number(batch.sellingPrice).toFixed(2)} ETB
                         </td>
-                        <td className="px-4 py-3 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            {expiryInfo.label === 'EXPIRED' && (
-                              <button
-                                onClick={() => {
-                                  setWriteOffBalanceId(bal.id);
-                                  setWriteOffQty(bal.quantity);
-                                  setShowWriteOffModal(true);
-                                }}
-                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-800 rounded font-semibold text-[11px] border border-rose-200 cursor-pointer"
-                              >
-                                Write-Off Expired
-                              </button>
-                            )}
 
+                        {/* 7. ACTIONS (Replenish & Overflow Menu for Write-Off) */}
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex items-center justify-center gap-1.5 relative">
                             {loc?.type === 'DISPENSARY' && bal.quantity < (prod.reorderLevel || 50) && (
                               <button
                                 onClick={() => {
@@ -664,9 +811,37 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                                 title="Prompt Store to Dispensary stock transfer to fix shortage"
                               >
                                 <ArrowRightLeft className="w-3 h-3 text-slate-950" />
-                                <span>Replenish from Store</span>
+                                <span>Replenish</span>
                               </button>
                             )}
+
+                            {/* Overflow Menu Button */}
+                            <div className="relative">
+                              <button
+                                onClick={() => setOverflowMenuBalanceId(overflowMenuBalanceId === bal.id ? null : bal.id)}
+                                className="p-1 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 border border-transparent hover:border-slate-200 cursor-pointer transition-colors"
+                                title="More batch options"
+                              >
+                                <MoreVertical className="w-4 h-4" />
+                              </button>
+
+                              {overflowMenuBalanceId === bal.id && (
+                                <div className="absolute right-0 top-7 z-30 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 text-left text-xs animate-in fade-in zoom-in-95">
+                                  <button
+                                    onClick={() => {
+                                      setWriteOffBalanceId(bal.id);
+                                      setWriteOffQty(bal.quantity);
+                                      setOverflowMenuBalanceId(null);
+                                      setShowWriteOffModal(true);
+                                    }}
+                                    className="w-full px-3 py-2 text-rose-700 hover:bg-rose-50 font-semibold flex items-center gap-2 cursor-pointer transition-colors text-xs"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                                    <span>Write-Off / Regulatory Disposal</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -987,7 +1162,7 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
                   >
                     {availableSourceBatches.map(({ balance, product, batch }) => (
                       <option key={batch!.id} value={batch!.id}>
-                        {product!.brandName} — Batch: {batch!.batchNumber} (Available: {balance.quantity} {product!.baseUnit}s • Exp: {batch!.expiryDate})
+                        {product!.brandName} — Batch: {batch!.batchNumber} (Available: {balance.quantity} {product!.baseUnit}s • Exp: {formatDualDate(batch!.expiryDate, language)})
                       </option>
                     ))}
                   </select>
@@ -1104,12 +1279,14 @@ export const InventoryTransfersView: React.FC<InventoryTransfersViewProps> = ({
               </div>
 
               <div>
-                <label className="font-semibold text-slate-700 mb-1 block">EFDA Disposal Certificate Ref</label>
+                <label className="font-semibold text-slate-700 mb-1 block">EFDA Disposal Certificate Ref *</label>
                 <input
                   type="text"
+                  required
+                  placeholder="e.g. EFDA-CERT-2026-DISP-01"
                   value={writeOffCertRef}
                   onChange={(e) => setWriteOffCertRef(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono"
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono text-xs"
                 />
               </div>
 

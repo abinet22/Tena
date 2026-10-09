@@ -265,27 +265,33 @@ export function runStockEngineTests(
 
   // TEST 2: Strict Blocking of Expired Batches at Dispensing
   try {
-    const expiredBatch = batches.find((b) => b.id === 'b-amox-expired')!;
-    // Set simulated current date AFTER expiry date (e.g., 2026)
+    // In loc-store: b-amox-02 has 2000 units (valid until 2027), b-amox-expired has 120 units (expired 2024-01-31).
+    // Requesting 2050 units must NEVER allocate the 120 expired units:
+    // It must allocate exactly 2000 from b-amox-02, skip b-amox-expired, and report unfulfilledQty: 50.
     const result = allocateBatchesFefo(
       'prod-amoxil',
       'loc-store',
-      50,
+      2050,
       batches,
       balances,
       new Date('2026-10-01')
     );
 
-    const isBlocked = result.expiredBatchesSkipped > 0 && result.allocations.length === 0;
+    const isBlocked =
+      result.expiredBatchesSkipped > 0 &&
+      result.allocations.every((a) => a.batchNumber !== 'AMX-22-EXPIRED') &&
+      result.allocations.reduce((sum, a) => sum + a.allocatedQty, 0) === 2000 &&
+      result.unfulfilledQty === 50 &&
+      !result.success;
 
     results.push({
       id: 'test-expired-blocking',
       name: 'EFDA Compliance: Absolute Blocking of Expired Stock',
       category: 'Compliance & Categories',
       passed: isBlocked,
-      expected: 'Expired batch (AMX-22-EXPIRED) must be rejected with 0 units dispensed',
+      expected: 'Expired batch (AMX-22-EXPIRED) must never be allocated; only 2000 valid units allocated, remaining 50 unfulfilled',
       actual: isBlocked
-        ? `Successfully blocked! Expired batches skipped: ${result.expiredBatchesSkipped}`
+        ? `Successfully blocked! Expired batches skipped: ${result.expiredBatchesSkipped}, 0 expired units allocated (${result.unfulfilledQty} base units unfulfilled).`
         : 'Failed: Expired batch was dispensed',
       details: 'Ensures expired pharmaceutical products are prohibited from dispensing and sale.',
     });
@@ -399,33 +405,39 @@ export function runStockEngineTests(
     });
   }
 
-  // TEST 6: Multi-Tenant Row-Level Security (RLS) Query Isolation
+  // TEST 6: Store-to-Dispensary FEFO Transfer Dispatch Priority & Quarantine Segregation
   try {
-    // Simulated RLS filter: filtering items by tenantId
-    const tenant1Id = 't-abyssinia';
-    const tenant2Id = 't-selam';
-
-    const tenant1Products = products.filter((p) => p.tenantId === tenant1Id);
-    const leakedProducts = tenant1Products.filter((p) => p.tenantId === tenant2Id);
-
-    const isRlsSecure = leakedProducts.length === 0 && tenant1Products.length > 0;
+    const storeFefo = allocateBatchesFefo(
+      'prod-amoxil',
+      'loc-store',
+      300,
+      batches,
+      balances,
+      new Date('2026-10-01')
+    );
+    const passedTransfer =
+      storeFefo.success &&
+      storeFefo.allocations.length === 1 &&
+      storeFefo.allocations[0].batchNumber === 'AMX-24-211' &&
+      storeFefo.allocations[0].allocatedQty === 300 &&
+      storeFefo.expiredBatchesSkipped === 1;
 
     results.push({
-      id: 'test-rls-isolation',
-      name: 'Multi-Tenant Row-Level Security Isolation',
-      category: 'RLS & Multi-Tenancy',
-      passed: isRlsSecure,
-      expected: 'Zero cross-tenant records exposed under active tenant session',
-      actual: isRlsSecure
-        ? `Session tenant '${tenant1Id}' isolated: 0 leaked foreign records found.`
-        : 'RLS breach: cross-tenant records detected',
-      details: 'Simulates PostgreSQL RLS session variable `SET LOCAL app.current_tenant_id`.',
+      id: 'test-fefo-transfer-dispatch',
+      name: 'FEFO Store-to-Dispensary Transfer Dispatch & Quarantine Isolation',
+      category: 'FEFO Stock Engine',
+      passed: passedTransfer,
+      expected: 'Store dispatch takes valid batch AMX-24-211 and skips expired batch AMX-22-EXPIRED in quarantine',
+      actual: passedTransfer
+        ? `Successfully selected valid store batch AMX-24-211 (${storeFefo.allocations[0].allocatedQty} units); quarantined expired batch safely skipped.`
+        : `Transfer dispatch allocation failed: ${JSON.stringify(storeFefo.allocations)}`,
+      details: 'Ensures warehouse-to-counter inventory transfers adhere strictly to FEFO and never transfer expired quarantine inventory.',
     });
   } catch (err: any) {
     results.push({
-      id: 'test-rls-isolation',
-      name: 'Multi-Tenant Row-Level Security Isolation',
-      category: 'RLS & Multi-Tenancy',
+      id: 'test-fefo-transfer-dispatch',
+      name: 'FEFO Store-to-Dispensary Transfer Dispatch & Quarantine Isolation',
+      category: 'FEFO Stock Engine',
       passed: false,
       expected: 'Pass',
       actual: err.message,

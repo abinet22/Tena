@@ -1,8 +1,8 @@
 /**
  * Ethiopian Calendar (Ge'ez / Bahire Hasab) conversion utilities.
+ * Uses exact Julian Day Number (JDN) astronomical epoch conversions.
  * The Ethiopian calendar has 12 months of 30 days plus 1 month of 5 or 6 days (Pagume).
  * It is approximately 7 to 8 years behind the Gregorian calendar.
- * Ethiopian New Year (Meskerem 1) corresponds to September 11 (or Sept 12 in Gregorian leap years).
  */
 
 export interface EthiopianDate {
@@ -29,14 +29,63 @@ export const ETHIOPIAN_MONTHS = [
   { id: 13, en: 'Pagume', am: 'ጳጉሜ' },
 ];
 
+function gregorianToJdn(year: number, month: number, day: number): number {
+  const a = Math.floor((14 - month) / 12);
+  const y = year + 4800 - a;
+  const m = month + 12 * a - 3;
+  return (
+    day +
+    Math.floor((153 * m + 2) / 5) +
+    365 * y +
+    Math.floor(y / 4) -
+    Math.floor(y / 100) +
+    Math.floor(y / 400) -
+    32045
+  );
+}
+
+function jdnToEthiopian(jdn: number) {
+  const r = (jdn - 1723856) % 1461;
+  const n = (r % 365) + 365 * Math.floor(r / 1460);
+  const year = 4 * Math.floor((jdn - 1723856) / 1461) + Math.floor(r / 365) - Math.floor(r / 1460);
+  const month = Math.floor(n / 30) + 1;
+  const day = (n % 30) + 1;
+  return { year, month, day };
+}
+
 /**
  * Converts a Gregorian Date to an Ethiopian Date
  */
 export function gregorianToEthiopian(inputDate: Date | string): EthiopianDate {
-  const gDate = typeof inputDate === 'string' ? new Date(inputDate) : inputDate;
+  let gDate: Date;
+  if (typeof inputDate === 'string') {
+    // Handle string inputs like "2024-09-11"
+    const parts = inputDate.split('T')[0].split('-');
+    if (parts.length === 3) {
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      const d = parseInt(parts[2], 10);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+        const jdn = gregorianToJdn(y, m, d);
+        const eth = jdnToEthiopian(jdn);
+        const mObj = ETHIOPIAN_MONTHS[eth.month - 1] || ETHIOPIAN_MONTHS[0];
+        return {
+          year: eth.year,
+          month: eth.month,
+          date: eth.day,
+          monthNameEn: mObj.en,
+          monthNameAm: mObj.am,
+        };
+      }
+    }
+    gDate = new Date(inputDate);
+  } else {
+    gDate = inputDate;
+  }
+
   if (isNaN(gDate.getTime())) {
     return {
-      year: 2019,
+      year: 2017,
       month: 1,
       date: 1,
       monthNameEn: 'Meskerem',
@@ -44,51 +93,18 @@ export function gregorianToEthiopian(inputDate: Date | string): EthiopianDate {
     };
   }
 
-  const gYear = gDate.getFullYear();
-  const gMonth = gDate.getMonth() + 1; // 1-12
-  const gDay = gDate.getDate();
+  const y = gDate.getFullYear();
+  const m = gDate.getMonth() + 1;
+  const d = gDate.getDate();
 
-  // Reference epoch offset algorithm
-  // September 11 of Gregorian year Y is Meskerem 1 of Ethiopian year (Y - 8) if before Sept 11, or (Y - 7) after.
-  // In the year before a Gregorian leap year, Ethiopian New Year is Sept 12.
-  const isLeapGregorian = (gYear % 4 === 0 && gYear % 100 !== 0) || gYear % 400 === 0;
-  const newYearDay = isLeapGregorian ? 12 : 11;
-
-  let ethYear: number;
-  let ethMonth: number;
-  let ethDay: number;
-
-  const sept11 = new Date(gYear, 8, newYearDay); // month index 8 is September
-  const diffTime = gDate.getTime() - sept11.getTime();
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-
-  if (diffDays >= 0) {
-    // Current Ethiopian year started this September
-    ethYear = gYear - 7;
-    ethMonth = Math.floor(diffDays / 30) + 1;
-    ethDay = (diffDays % 30) + 1;
-  } else {
-    // Before Ethiopian New Year, still in previous Ethiopian year
-    ethYear = gYear - 8;
-    const prevYearSept11 = new Date(gYear - 1, 8, isLeapGregorian ? 11 : 11);
-    const daysSincePrevSept11 = Math.floor((gDate.getTime() - prevYearSept11.getTime()) / (1000 * 60 * 60 * 24));
-    ethMonth = Math.floor(daysSincePrevSept11 / 30) + 1;
-    ethDay = (daysSincePrevSept11 % 30) + 1;
-  }
-
-  if (ethMonth > 13) {
-    ethMonth = 13;
-  }
-  if (ethMonth === 13 && ethDay > 6) {
-    ethDay = 6;
-  }
-
-  const monthObj = ETHIOPIAN_MONTHS[ethMonth - 1] || ETHIOPIAN_MONTHS[0];
+  const jdn = gregorianToJdn(y, m, d);
+  const eth = jdnToEthiopian(jdn);
+  const monthObj = ETHIOPIAN_MONTHS[eth.month - 1] || ETHIOPIAN_MONTHS[0];
 
   return {
-    year: ethYear,
-    month: ethMonth,
-    date: ethDay,
+    year: eth.year,
+    month: eth.month,
+    date: eth.day,
     monthNameEn: monthObj.en,
     monthNameAm: monthObj.am,
   };
@@ -97,17 +113,32 @@ export function gregorianToEthiopian(inputDate: Date | string): EthiopianDate {
 /**
  * Formats a date with dual calendar display (Ethiopian + Gregorian)
  */
-export function formatDualDate(inputDate: Date | string, language: 'en' | 'am' = 'en'): string {
+export function formatDualDate(
+  inputDate: Date | string,
+  language: 'en' | 'am' = 'en',
+  preferEthiopian: boolean = true
+): string {
   const gDate = typeof inputDate === 'string' ? new Date(inputDate) : inputDate;
   if (isNaN(gDate.getTime())) return '';
 
-  const eth = gregorianToEthiopian(gDate);
-  const gcFormatted = gDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const eth = gregorianToEthiopian(inputDate);
+  const gcFormatted = gDate.toLocaleDateString(language === 'am' ? 'en-GB' : 'en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
 
-  if (language === 'am') {
-    return `${eth.monthNameAm} ${eth.date}፣ ${eth.year} ዓ.ም (${gcFormatted} ፈ)`;
+  if (preferEthiopian) {
+    if (language === 'am') {
+      return `${eth.monthNameAm} ${eth.date}፣ ${eth.year} ዓ.ም (${gcFormatted} ፈ)`;
+    }
+    return `${eth.date} ${eth.monthNameEn} ${eth.year} EC (${gcFormatted} GC)`;
+  } else {
+    if (language === 'am') {
+      return `${gcFormatted} ፈ (${eth.monthNameAm} ${eth.date}፣ ${eth.year} ዓ.ም)`;
+    }
+    return `${gcFormatted} GC (${eth.date} ${eth.monthNameEn} ${eth.year} EC)`;
   }
-  return `${eth.monthNameEn} ${eth.date}, ${eth.year} EC (${gcFormatted} GC)`;
 }
 
 /**

@@ -133,6 +133,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
         return;
       }
 
+      if (matchedUser.isActive === false) {
+        setLoginError('Your user account is deactivated. Please contact your Pharmacy Lead Administrator.');
+        setLoginLoading(false);
+        return;
+      }
+
       if (matchedUser.password && loginPassword && matchedUser.password !== loginPassword) {
         setLoginError('Invalid password. Default demo password is "password123" or "admin123".');
         setLoginLoading(false);
@@ -177,6 +183,10 @@ export const AuthView: React.FC<AuthViewProps> = ({
     setLoginPassword('password123');
     const matchedUser = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
     if (matchedUser) {
+      if (matchedUser.isActive === false) {
+        setLoginError('Your user account is deactivated. Please contact your Pharmacy Lead Administrator.');
+        return;
+      }
       if (matchedUser.isPlatformAdmin) {
         onLoginSuccess(matchedUser, undefined);
         if (onClose) onClose();

@@ -12,6 +12,7 @@ import {
 } from '../types/pharmacy';
 import { validateBatchRequirements, sanitizePriceForRole } from '../utils/stockEngine';
 import { formatDualDate } from '../utils/ethiopianCalendar';
+import { DualDate } from './DualDate';
 import { createAuditLog } from '../utils/auditLogger';
 
 interface PurchasingViewProps {
@@ -617,7 +618,9 @@ export const PurchasingView: React.FC<PurchasingViewProps> = ({
                           <div key={idx} className="space-y-0.5 text-[11px]">
                             <span className="font-semibold text-slate-800">{prod?.brandName}:</span>{' '}
                             <span>{it.quantityReceived} {prod?.baseUnit}s</span>{' '}
-                            <span className="font-mono text-[10px] text-slate-500">[Batch: {it.batchNumber} | Exp: {it.expiryDate}]</span>
+                            <span className="font-mono text-[10px] text-slate-500">
+                              [Batch: {it.batchNumber} | Exp: <DualDate value={it.expiryDate} lang={language} format="month-year" />]
+                            </span>
                           </div>
                         );
                       })}

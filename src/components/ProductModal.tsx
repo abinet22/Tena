@@ -33,9 +33,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
   const [barcode, setBarcode] = useState('');
 
   // Medicine fields
+  const [efdaRegistrationNo, setEfdaRegistrationNo] = useState('');
   const [genericId, setGenericId] = useState('');
   const [dosageForm, setDosageForm] = useState('Capsule');
-  const [strength, setStrength] = useState('500mg');
+  const [numericStrength, setNumericStrength] = useState<string>('500');
+  const [strengthUnit, setStrengthUnit] = useState<string>('mg');
   const [packSize, setPackSize] = useState('10 x 10');
   const [manufacturerId, setManufacturerId] = useState('');
   const [countryOfOrigin, setCountryOfOrigin] = useState('Ethiopia');
@@ -50,6 +52,13 @@ export const ProductModal: React.FC<ProductModalProps> = ({
   const [secondaryRatio, setSecondaryRatio] = useState<number>(10);
   const [tertiaryUnit, setTertiaryUnit] = useState('Box');
   const [tertiaryRatio, setTertiaryRatio] = useState<number>(100);
+  const [conversionError, setConversionError] = useState<string | null>(null);
+
+  // Check if packaging ratios divide cleanly
+  const isRatioDivisible = !secondaryRatio || !tertiaryRatio || (secondaryRatio > 0 && tertiaryRatio % secondaryRatio === 0);
+  const ratioErrorMessage = !isRatioDivisible
+    ? `Invalid conversion: ${tertiaryRatio} cannot be divided by ${secondaryRatio} (${tertiaryRatio} / ${secondaryRatio} does not divide evenly). 1 ${tertiaryUnit || 'Box'} must contain a whole number of ${secondaryUnit || 'Strip'}s.`
+    : null;
 
   // General fields
   const [variantSize, setVariantSize] = useState('');
@@ -66,9 +75,25 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       setCategoryId(productToEdit.categoryId);
       setBrandName(productToEdit.brandName);
       setBarcode(productToEdit.barcode || '');
+      setEfdaRegistrationNo(productToEdit.efdaRegistrationNo || '');
       setGenericId(productToEdit.genericId || '');
       setDosageForm(productToEdit.dosageForm || 'Tablet');
-      setStrength(productToEdit.strength || '');
+      
+      // Parse numeric strength and unit if present
+      if (productToEdit.strength) {
+        const match = productToEdit.strength.match(/^([\d.]+)\s*(.*)$/);
+        if (match) {
+          setNumericStrength(match[1]);
+          setStrengthUnit(match[2] || 'mg');
+        } else {
+          setNumericStrength(productToEdit.strength);
+          setStrengthUnit('mg');
+        }
+      } else {
+        setNumericStrength('500');
+        setStrengthUnit('mg');
+      }
+
       setPackSize(productToEdit.packSize || '');
       setManufacturerId(productToEdit.manufacturerId || '');
       setCountryOfOrigin(productToEdit.countryOfOrigin || 'Ethiopia');
@@ -87,14 +112,18 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       setStandardSellingPrice(productToEdit.standardSellingPrice || 0);
       setReorderLevel(productToEdit.reorderLevel || 50);
       setReorderQuantity(productToEdit.reorderQuantity || 200);
+      setConversionError(null);
     } else {
       // Defaults
       setProductType('MEDICINE');
       if (categories.length > 0) setCategoryId(categories[0].id);
       if (generics.length > 0) setGenericId(generics[0].id);
-      if (manufacturers.length > 0) setManufacturerId(manufacturers[0].id);
+      setManufacturerId('');
       setBrandName('');
       setBarcode('');
+      setEfdaRegistrationNo('');
+      setNumericStrength('500');
+      setStrengthUnit('mg');
       setIsControlled(false);
       setPrescriptionRequired(true);
       setBaseUnit('Capsule');
@@ -102,6 +131,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       setSecondaryRatio(10);
       setTertiaryUnit('Box');
       setTertiaryRatio(100);
+      setConversionError(null);
     }
   }, [productToEdit, isOpen, categories, generics, manufacturers]);
 
@@ -113,14 +143,22 @@ export const ProductModal: React.FC<ProductModalProps> = ({
     e.preventDefault();
     if (!brandName.trim() || !categoryId) return;
 
+    if (!isRatioDivisible) {
+      setConversionError(ratioErrorMessage);
+      return;
+    }
+
+    const compiledStrength = numericStrength ? `${numericStrength} ${strengthUnit}`.trim() : undefined;
+
     onSave({
       productType,
       categoryId,
       brandName,
       barcode: barcode || undefined,
+      efdaRegistrationNo: efdaRegistrationNo || undefined,
       genericId: productType === 'MEDICINE' ? genericId || undefined : undefined,
       dosageForm: productType === 'MEDICINE' ? dosageForm : undefined,
-      strength: productType === 'MEDICINE' ? strength : undefined,
+      strength: productType === 'MEDICINE' ? compiledStrength : undefined,
       packSize: productType === 'MEDICINE' ? packSize : undefined,
       manufacturerId: manufacturerId || undefined,
       countryOfOrigin,
@@ -139,7 +177,6 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       reorderQuantity: Number(reorderQuantity) || 200,
       isActive: true,
     });
-
     onClose();
   };
 
@@ -276,13 +313,23 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                 <span>Ethiopian Food & Drug Authority (EFDA) Medicine Profile</span>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 mb-1 block">EFDA Registration No</label>
+                  <input
+                    type="text"
+                    value={efdaRegistrationNo}
+                    onChange={(e) => setEfdaRegistrationNo(e.target.value)}
+                    placeholder="e.g. EFDA-0982-REG"
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono text-xs"
+                  />
+                </div>
                 <div>
                   <label className="font-semibold text-slate-700 mb-1 block">INN Generic Active Ingredient *</label>
                   <select
                     value={genericId}
                     onChange={(e) => setGenericId(e.target.value)}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white"
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
                   >
                     {generics.map((g) => (
                       <option key={g.id} value={g.id}>
@@ -298,29 +345,51 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                     value={dosageForm}
                     onChange={(e) => setDosageForm(e.target.value)}
                     placeholder="Capsule, Tablet, Syrup, Injection..."
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300"
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 text-xs"
                   />
                 </div>
                 <div>
-                  <label className="font-semibold text-slate-700 mb-1 block">Strength</label>
-                  <input
-                    type="text"
-                    value={strength}
-                    onChange={(e) => setStrength(e.target.value)}
-                    placeholder="500mg, 250mg/5ml..."
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300"
-                  />
+                  <label className="font-semibold text-slate-700 mb-1 block">Strength (Numeric + Unit)</label>
+                  <div className="flex gap-1">
+                    <input
+                      type="number"
+                      step="any"
+                      value={numericStrength}
+                      onChange={(e) => setNumericStrength(e.target.value)}
+                      placeholder="500"
+                      className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 font-bold text-xs"
+                    />
+                    <select
+                      value={strengthUnit}
+                      onChange={(e) => setStrengthUnit(e.target.value)}
+                      className="flex-1 px-2 py-1.5 rounded-lg border border-slate-300 bg-white font-semibold text-xs"
+                    >
+                      <option value="mg">mg</option>
+                      <option value="g">g</option>
+                      <option value="ml">ml</option>
+                      <option value="mcg">mcg</option>
+                      <option value="IU">IU</option>
+                      <option value="%">%</option>
+                      <option value="mg/5ml">mg/5ml</option>
+                      <option value="mcg/dose">mcg/dose</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 mb-1 block">Manufacturer</label>
+                  <label className="font-semibold text-slate-700 mb-1 block">
+                    {language === 'am' ? 'አምራች (አማራጭ)' : 'Manufacturer (Optional)'}
+                  </label>
                   <select
                     value={manufacturerId}
                     onChange={(e) => setManufacturerId(e.target.value)}
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white"
                   >
+                    <option value="">
+                      {language === 'am' ? '-- አምራች አልተገለጸም (አማራጭ) --' : '-- None / Optional Manufacturer --'}
+                    </option>
                     {manufacturers.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.name} ({m.country})
@@ -409,12 +478,17 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="font-semibold text-slate-700 mb-1 block">Manufacturer / Brand Owner</label>
+                  <label className="font-semibold text-slate-700 mb-1 block">
+                    {language === 'am' ? 'አምራች / የብራንድ ባለቤት (አማራጭ)' : 'Manufacturer / Brand Owner (Optional)'}
+                  </label>
                   <select
                     value={manufacturerId}
                     onChange={(e) => setManufacturerId(e.target.value)}
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white"
                   >
+                    <option value="">
+                      {language === 'am' ? '-- አምራች አልተገለጸም (አማራጭ) --' : '-- None / Optional Manufacturer --'}
+                    </option>
                     {manufacturers.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.name} ({m.country})
@@ -516,16 +590,23 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               </div>
             </div>
 
-            {/* Live conversion summary badge */}
-            <div className="bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-lg px-3 py-1.5 flex items-center justify-between text-[11px]">
-              <span className="font-semibold">Conversion Formula:</span>
-              <span className="font-mono">
-                1 {tertiaryUnit || 'Box'} = {tertiaryRatio} {baseUnit}s{' '}
-                {secondaryUnit && secondaryRatio
-                  ? `(${tertiaryRatio && secondaryRatio ? Math.floor(tertiaryRatio / secondaryRatio) : 1} ${secondaryUnit}s @ ${secondaryRatio} ${baseUnit}s/strip)`
-                  : ''}
-              </span>
-            </div>
+            {/* Live conversion summary badge & validation */}
+            {ratioErrorMessage ? (
+              <div className="bg-rose-50 text-rose-900 border border-rose-300 rounded-lg p-3 text-xs flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+                <div>
+                  <span className="font-bold block text-rose-800">Packaging Ratio Error</span>
+                  <span className="text-[11px] text-rose-700">{ratioErrorMessage}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-emerald-50 text-emerald-900 border border-emerald-300 rounded-lg px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs shadow-2xs">
+                <span className="font-semibold text-emerald-800">Verified Unit Conversion:</span>
+                <span className="font-mono font-bold text-emerald-950 text-xs">
+                  {`1 ${tertiaryUnit || 'Box'} = ${secondaryRatio && tertiaryRatio ? Math.round(tertiaryRatio / secondaryRatio) : 1} ${secondaryUnit || 'Strip'}s = ${tertiaryRatio} ${baseUnit || 'Capsule'}s`}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Reorder Thresholds */}
@@ -555,20 +636,30 @@ export const ProductModal: React.FC<ProductModalProps> = ({
           </div>
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-xs transition-colors"
-            >
-              {productToEdit ? 'Save Changes' : 'Register Product'}
-            </button>
+          <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+            {conversionError ? (
+              <span className="text-xs font-bold text-rose-600 flex items-center gap-1">
+                <AlertCircle className="w-4 h-4" />
+                {conversionError}
+              </span>
+            ) : <span />}
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-slate-600 hover:text-slate-800 font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!isRatioDivisible}
+                className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
+              >
+                {productToEdit ? 'Save Changes' : 'Register Product'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

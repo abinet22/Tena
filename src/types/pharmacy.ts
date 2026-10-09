@@ -126,6 +126,7 @@ export interface Product {
   barcode?: string;
 
   // Medicine Specific Fields
+  efdaRegistrationNo?: string;
   genericId?: string;
   dosageForm?: string;
   strength?: string;
@@ -410,6 +411,19 @@ export interface AuditLog {
   ipAddress?: string;
   verificationHash?: string;
   createdAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  tenantId: string;
+  roleTarget: RoleCode | 'ALL';
+  title: string;
+  message: string;
+  type: 'EXPIRY_WARNING' | 'LOW_STOCK' | 'CREDIT_LIMIT' | 'AUDIT_ALERT';
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  createdAt: string;
+  read: boolean;
+  linkTab?: string;
 }
 
 export const ALL_PERMISSIONS = [

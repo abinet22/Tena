@@ -945,7 +945,7 @@ export const initialStockBalances: StockBalance[] = [
     tenantId: 't-abyssinia',
     locationId: 'loc-disp',
     productId: 'prod-amoxil',
-    batchId: 'b-amox-211',
+    batchId: 'b-amox-02',
     quantity: 600,
     reserved: 0,
     updatedAt: new Date().toISOString(),

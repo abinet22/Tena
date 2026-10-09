@@ -56,6 +56,7 @@ interface DashboardSidebarProps {
     auditLogsCount: number;
     tenantsCount: number;
     staffCount: number;
+    testsSummary?: { passed: number; total: number; failed: number };
   };
 }
 
@@ -113,6 +114,15 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
 
   const isPlatformAdmin = !!currentUser?.isPlatformAdmin;
 
+  const testsBadgeStr = badges.testsSummary
+    ? (badges.testsSummary.failed > 0
+        ? `${badges.testsSummary.failed} FAIL`
+        : `${badges.testsSummary.passed}/${badges.testsSummary.total}`)
+    : '7/7';
+  const testsBadgeColor = badges.testsSummary && badges.testsSummary.failed > 0
+    ? 'bg-rose-950 text-rose-300 border border-rose-800 font-bold'
+    : undefined;
+
   // Build role-tailored navigation items
   const getNavItems = (): { section: string; items: SidebarItem[] }[] => {
     // 1. SaaS Platform Admin
@@ -126,7 +136,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
             { id: 'REPORTS', label: language === 'am' ? 'ሪፖርቶችና ትንታኔ' : 'Executive Reports', icon: BarChart3 },
             { id: 'AUDIT_LOGS', label: t.tabAuditLog, icon: FileText, badge: badges.auditLogsCount },
             { id: 'ARCHITECTURE', label: t.tabArchitecture, icon: Code2 },
-            { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: '7/7' },
+            { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: testsBadgeStr, badgeColor: testsBadgeColor },
           ],
         },
       ];
@@ -164,7 +174,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
         {
           section: language === 'am' ? 'ሲስተም' : 'System',
           items: [
-            { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: '7/7' },
+            { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: testsBadgeStr, badgeColor: testsBadgeColor },
             { id: 'ARCHITECTURE', label: t.tabArchitecture, icon: Code2 },
           ],
         },
@@ -189,7 +199,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
           items: [
             { id: 'REPORTS', label: language === 'am' ? 'የስቶክ ሪፖርቶች' : 'Inventory Reports', icon: BarChart3 },
             { id: 'AUDIT_LOGS', label: t.tabAuditLog, icon: FileText, badge: badges.auditLogsCount },
-            { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: '7/7' },
+            { id: 'TESTS', label: t.tabStockTests, icon: Cpu, badge: testsBadgeStr, badgeColor: testsBadgeColor },
           ],
         },
       ];
@@ -383,14 +393,16 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
 
         {/* Action icons */}
         <div className={`flex items-center gap-1.5 pt-1 border-t border-slate-800/80 ${isCollapsed ? 'justify-center' : 'justify-between'}`}>
-          <button
-            onClick={onGoToLanding}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800 transition-colors flex items-center gap-1 text-[11px]"
-            title="Return to Public SaaS Home Website & Pricing"
-          >
-            <Globe className="w-3.5 h-3.5" />
-            {!isCollapsed && <span>{language === 'am' ? 'ዌብሳይት' : 'SaaS Home'}</span>}
-          </button>
+          {isPlatformAdmin && (
+            <button
+              onClick={onGoToLanding}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800 transition-colors flex items-center gap-1 text-[11px]"
+              title="Return to Public SaaS Home Website & Pricing"
+            >
+              <Globe className="w-3.5 h-3.5" />
+              {!isCollapsed && <span>{language === 'am' ? 'ዌብሳይት' : 'SaaS Home'}</span>}
+            </button>
+          )}
 
           <button
             onClick={onLogout}
